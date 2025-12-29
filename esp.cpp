@@ -106,9 +106,15 @@ void enterDeepSleep() {
   if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return;
 
   int current_hour = timeinfo.tm_hour;
+  int current_min = timeinfo.tm_min;
   int relayState = digitalRead(RELAY_PIN);
 
-  if ((current_hour >= 19 || current_hour < 7) && relayState == LOW) {
+  bool is_night = false;
+  if (current_hour >= 19) is_night = true;
+  if (current_hour < 7) is_night = true;
+  if (current_hour == 7 && current_min < 30) is_night = true;
+
+  if (is_night && relayState == LOW) {
     if (off_start_time == 0) {
       off_start_time = millis();
       addLog("Relay OFF after 7PM. Sleep timer started.");
@@ -121,7 +127,7 @@ void enterDeepSleep() {
         target_time.tm_mday++;
       }
       target_time.tm_hour = 7;
-      target_time.tm_min = 0;
+      target_time.tm_min = 30;
       target_time.tm_sec = 0;
       
       time_t now = mktime(&timeinfo);
@@ -129,7 +135,7 @@ void enterDeepSleep() {
       
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
       if (sleep_us > 0) {
-        addLog("Deep Sleep: Wake 7AM");
+        addLog("Deep Sleep: Wake 7:30AM");
         setINA219PowerDown();
         digitalWrite(RELAY_PIN, LOW);
         delay(200);
