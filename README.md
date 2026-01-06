@@ -6,7 +6,7 @@ A lightweight **ESP32-based solar/battery relay controller** using the **INA219 
 
 ## Features
 
-* Battery voltage & current monitoring via INA219
+* Battery voltage, current & power monitoring via INA219
 * External **RTC DS3231** support (timekeeping without internet)
 * Automatic relay control with multi-condition logic
 
@@ -15,6 +15,7 @@ A lightweight **ESP32-based solar/battery relay controller** using the **INA219 
 * Built-in web dashboard
 
   * Live voltage, current, power
+  * **Peak voltage / current / power tracking**
   * Relay status (AUTO / MANUAL)
   * RTC temperature monitoring
   * Event history (last 15 events)
@@ -22,7 +23,8 @@ A lightweight **ESP32-based solar/battery relay controller** using the **INA219 
 * Manual relay override (Force ON / OFF)
 * Persistent settings using ESP32 Preferences (NVS)
 * NTP time synchronization with **RTC backup**
-* Night-time deep sleep with smart delay (19:00 – 07:30)
+* Smart WiFi auto-reconnect (reduced TX power)
+* Night-time deep sleep with delay
 * Low-power INA219 handling (power-down when idle)
 * Offline-safe operation (relay logic works without WiFi)
 * **Web-based OTA firmware update**
@@ -96,11 +98,11 @@ http://192.168.1.5/
 
 * Current date & time (NTP / RTC synced)
 * RTC temperature sensor reading
-* Battery voltage (V)
-* Current (mA)
-* Power (W)
+* Battery voltage, current & power
+* **Peak voltage / current / power values**
 * Relay state (ACTIVE / INACTIVE)
 * Manual relay control buttons
+* Reset peak values button
 * System event history
 * Voltage & current threshold configuration
 * **OTA firmware upload interface**
@@ -112,9 +114,10 @@ All settings are saved permanently to ESP32 flash memory.
 ## Power Saving Behavior
 
 * INA219 enters power-down mode when idle
-* ESP32 enters deep sleep **only after relay has been OFF for 1 hour at night**
-* Night window: **19:00 – 07:30**
-* Automatically wakes up at **7:30 AM**
+* WiFi TX power reduced to save energy
+* ESP32 enters deep sleep **only after relay has been OFF for 30 minutes at night**
+* Night window: **19:00 – 08:00**
+* Automatically wakes up at **8:00 AM**
 
 ---
 
@@ -146,8 +149,10 @@ If WiFi or NTP fails:
 
 * Solar battery protection
 * Router or load auto cutoff
+* Solar-powered networking equipment
 * Small off-grid solar systems
 * DIY UPS or solar relay automation
+* Peak load and voltage observation
 
 ---
 
