@@ -6,7 +6,6 @@
 #include <Preferences.h>
 #include <time.h>
 #include <vector>
-#include <ArduinoOTA.h>
 #include <Update.h>
 
 Adafruit_INA219 ina219;
@@ -34,13 +33,16 @@ float voltage_low_cutoff_V;
 float voltage_high_on_threshold_V;
 float current_on_threshold_mA;
 
+float peak_v = 0, peak_c = 0, peak_p = 0;
+
 unsigned long debounce_delay_ms = 60000;
 unsigned long debounce_timer_start = 0;
 int last_stable_state = LOW;
 
-unsigned long wifi_retry_interval = 43200000;
-unsigned long last_wifi_attempt = 0;
 bool is_online = false;
+bool ntp_synced = false;
+unsigned long last_wifi_check = 0;
+const unsigned long wifi_check_interval = 30000; 
 
 unsigned long off_start_time = 0;
 
@@ -124,28 +126,25 @@ void enterDeepSleep() {
   if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return;
 
   int current_hour = timeinfo.tm_hour;
-  int current_min = timeinfo.tm_min;
   int relayState = digitalRead(RELAY_PIN);
 
   bool is_night = false;
-  if (current_hour >= 19) is_night = true;
-  if (current_hour < 7) is_night = true;
-  if (current_hour == 7 && current_min < 30) is_night = true;
+  if (current_hour >= 19 || current_hour < 8) is_night = true;
 
   if (is_night && relayState == LOW) {
     if (off_start_time == 0) {
       off_start_time = millis();
-      addLog("Night mode: Sleep timer active");
+      addLog("Night mode: Timer start (30m)");
       return;
     }
     
-    if (millis() - off_start_time >= 3600000UL) {
+    if (millis() - off_start_time >= 1800000UL) {
       struct tm target_time = timeinfo;
       if (current_hour >= 19) {
         target_time.tm_mday++;
       }
-      target_time.tm_hour = 7;
-      target_time.tm_min = 30;
+      target_time.tm_hour = 8;
+      target_time.tm_min = 0;
       target_time.tm_sec = 0;
       
       time_t now = mktime(&timeinfo);
@@ -153,7 +152,7 @@ void enterDeepSleep() {
       
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
       if (sleep_us > 0) {
-        addLog("Deep Sleep Start");
+        addLog("Sleep: Wake 8AM");
         setINA219PowerDown();
         digitalWrite(RELAY_PIN, LOW);
         delay(200);
@@ -177,6 +176,15 @@ void handleToggle() {
   server.send(303);
 }
 
+void handleResetPeaks() {
+  peak_v = 0;
+  peak_c = 0;
+  peak_p = 0;
+  addLog("Peaks Reset");
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
 void handleRoot() {
   setINA219Active();
   delay(60);
@@ -185,6 +193,10 @@ void handleRoot() {
   float p = ina219.getPower_mW();
   setINA219PowerDown();
   
+  if (v > peak_v) peak_v = v;
+  if (c > peak_c) peak_c = c;
+  if (p > peak_p) peak_p = p;
+
   float temp = 0;
   if (rtc_found) {
     temp = rtc.getTemperature() - 2.0;
@@ -198,16 +210,18 @@ void handleRoot() {
   html += ".status{font-weight:bold;color:" + String(relayState == HIGH ? "#2e7d32" : "#c62828") + ";}";
   html += "input{width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;border:1px solid #ccc;border-radius:4px;}";
   html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
-  html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;}";
+  html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
+  html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   
   html += "<h1>Solar System</h1><div class='card'>";
   html += "<p>Time: " + getTimeString() + "</p>";
   html += "<p>RTC Temp: <b>" + String(temp, 1) + " C</b></p>";
-  html += "<p>Voltage: <b>" + String(v, 2) + " V</b></p>";
-  html += "<p>Current: <b>" + String(c, 1) + " mA</b></p>";
-  html += "<p>Power: <b>" + String(p / 1000.0, 2) + " W</b></p>";
-  html += "<p>Relay State: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p></div>";
+  html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
+  html += "<p>Current: <b>" + String(c, 1) + " mA</b> <span class='peak'>(Peak: " + String(peak_c, 1) + ")</span></p>";
+  html += "<p>Power: <b>" + String(p / 1000.0, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p / 1000.0, 2) + ")</span></p>";
+  html += "<p>Relay State: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
+  html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak Values</button></div>";
   
   html += "<h2>Manual Control</h2><div class='card'>";
   html += "<button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
@@ -257,7 +271,12 @@ void checkAndControlRelay() {
   delay(60);
   float current_voltage_V = ina219.getBusVoltage_V();
   float current_mA = ina219.getCurrent_mA();
+  float current_mW = ina219.getPower_mW();
   setINA219PowerDown();
+
+  if (current_voltage_V > peak_v) peak_v = current_voltage_V;
+  if (current_mA > peak_c) peak_c = current_mA;
+  if (current_mW > peak_p) peak_p = current_mW;
 
   int desired_state = last_stable_state;
   if (current_voltage_V >= voltage_high_on_threshold_V && current_mA >= current_on_threshold_mA) {
@@ -280,47 +299,17 @@ void checkAndControlRelay() {
   }
 }
 
-void connectAndSync() {
-  addLog("Connecting...");
-  WiFi.disconnect();
-  WiFi.mode(WIFI_STA);
-  WiFi.config(local_IP, gateway, subnet);
-  
-  WiFi.begin(ssid);
-  unsigned long startWifi = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startWifi < 8000) {
-    delay(200);
-    checkAndControlRelay(); 
-  }
-
+void maintainWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
-    addLog("WiFi OK");
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    
-    struct tm timeinfo;
-    unsigned long startNtp = millis();
-    bool syncOk = false;
-    while (millis() - startNtp < 5000) {
-      if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
-        if (rtc_found) {
-          rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
-        }
-        addLog("NTP Synced");
-        syncOk = true;
-        break;
-      }
-      delay(200);
-      checkAndControlRelay();
-    }
-    
-    if (syncOk) {
+    if (!is_online) {
+      addLog("WiFi Connected");
       is_online = true;
-      off_start_time = 0; 
-      ArduinoOTA.setHostname("solar-relay-c3");
-      ArduinoOTA.begin();
+      configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+      
       server.on("/", handleRoot);
       server.on("/save", HTTP_POST, handleSave);
       server.on("/toggle", handleToggle);
+      server.on("/reset_peaks", handleResetPeaks);
       server.on("/update", HTTP_POST, []() {
         server.sendHeader("Connection", "close");
         server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK. REBOOTING...");
@@ -337,16 +326,32 @@ void connectAndSync() {
         }
       });
       server.begin();
-    } else {
-      addLog("NTP Fail");
-      WiFi.disconnect();
-      is_online = false;
     }
+
+    if (!ntp_synced) {
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
+        if (rtc_found) {
+          rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+        }
+        addLog("NTP Synced");
+        ntp_synced = true;
+      }
+    }
+    
+    server.handleClient();
   } else {
-    addLog("WiFi Timeout");
-    is_online = false;
+    if (is_online) {
+      addLog("WiFi Connection Lost");
+      is_online = false;
+      ntp_synced = false;
+    }
+    
+    if (millis() - last_wifi_check > wifi_check_interval || last_wifi_check == 0) {
+      last_wifi_check = millis();
+      WiFi.begin(ssid);
+    }
   }
-  last_wifi_attempt = millis();
 }
 
 void setup() {
@@ -366,26 +371,28 @@ void setup() {
   }
 
   loadSettings();
-  connectAndSync();
+
+  WiFi.mode(WIFI_STA);
+  WiFi.config(local_IP, gateway, subnet);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid);
 }
 
 void loop() {
   checkAndControlRelay();
-  
+  maintainWiFi();
+
+  if (rtc_found && !ntp_synced) {
+    static unsigned long last_rtc_sync = 0;
+    if (millis() - last_rtc_sync > 60000) {
+      syncInternalClockFromRTC();
+      last_rtc_sync = millis();
+    }
+  }
+
   if (is_online) {
-    ArduinoOTA.handle();
-    server.handleClient();
-    if (WiFi.status() != WL_CONNECTED) {
-      is_online = false;
-      last_wifi_attempt = millis();
-      addLog("WiFi Lost");
-    }
     enterDeepSleep();
-  } else {
-    if (millis() - last_wifi_attempt > wifi_retry_interval) {
-      connectAndSync();
-    }
-    if (rtc_found) syncInternalClockFromRTC();
   }
   
   delay(10);
