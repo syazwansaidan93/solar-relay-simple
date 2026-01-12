@@ -1,6 +1,5 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
-#include <RTClib.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -9,9 +8,7 @@
 #include <Update.h>
 
 Adafruit_INA219 ina219;
-RTC_DS3231 rtc;
 bool ina219_found = false;
-bool rtc_found = false;
 
 #define RELAY_PIN 5
 #define SDA_PIN 8
@@ -102,22 +99,9 @@ String getTimeString() {
   return String(timeStringBuff);
 }
 
-void syncInternalClockFromRTC() {
-  if (!rtc_found) return;
-  DateTime now = rtc.now();
-  struct tm tm;
-  tm.tm_year = now.year() - 1900;
-  tm.tm_mon = now.month() - 1;
-  tm.tm_mday = now.day();
-  tm.tm_hour = now.hour();
-  tm.tm_min = now.minute();
-  tm.tm_sec = now.second();
-  time_t t = mktime(&tm);
-  struct timeval tv = { .tv_sec = t };
-  settimeofday(&tv, NULL);
-}
-
 void enterDeepSleep() {
+  if (!ntp_synced) return;
+
   static unsigned long last_sleep_check = 0;
   if (millis() - last_sleep_check < 10000) return;
   last_sleep_check = millis();
@@ -197,11 +181,6 @@ void handleRoot() {
   if (c > peak_c) peak_c = c;
   if (p > peak_p) peak_p = p;
 
-  float temp = 0;
-  if (rtc_found) {
-    temp = rtc.getTemperature() - 2.0;
-  }
-  
   int relayState = digitalRead(RELAY_PIN);
   
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
@@ -216,7 +195,6 @@ void handleRoot() {
   
   html += "<h1>Solar System</h1><div class='card'>";
   html += "<p>Time: " + getTimeString() + "</p>";
-  html += "<p>RTC Temp: <b>" + String(temp, 1) + " C</b></p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(c, 1) + " mA</b> <span class='peak'>(Peak: " + String(peak_c, 1) + ")</span></p>";
   html += "<p>Power: <b>" + String(p / 1000.0, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p / 1000.0, 2) + ")</span></p>";
@@ -331,9 +309,6 @@ void maintainWiFi() {
     if (!ntp_synced) {
       struct tm timeinfo;
       if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
-        if (rtc_found) {
-          rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
-        }
         addLog("NTP Synced");
         ntp_synced = true;
       }
@@ -359,16 +334,7 @@ void setup() {
   digitalWrite(RELAY_PIN, LOW); 
 
   Wire.begin(SDA_PIN, SCL_PIN);
-  
   ina219_found = ina219.begin();
-  rtc_found = rtc.begin();
-  
-  if (rtc_found) {
-    syncInternalClockFromRTC();
-    addLog("RTC Init OK");
-  } else {
-    addLog("RTC Not Found");
-  }
 
   loadSettings();
 
@@ -383,15 +349,7 @@ void loop() {
   checkAndControlRelay();
   maintainWiFi();
 
-  if (rtc_found && !ntp_synced) {
-    static unsigned long last_rtc_sync = 0;
-    if (millis() - last_rtc_sync > 60000) {
-      syncInternalClockFromRTC();
-      last_rtc_sync = millis();
-    }
-  }
-
-  if (is_online) {
+  if (is_online && ntp_synced) {
     enterDeepSleep();
   }
   
