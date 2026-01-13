@@ -42,6 +42,7 @@ unsigned long last_wifi_check = 0;
 const unsigned long wifi_check_interval = 30000; 
 
 unsigned long off_start_time = 0;
+unsigned long sync_stable_timer = 0;
 
 std::vector<String> eventLogs;
 const int MAX_LOGS = 15;
@@ -101,6 +102,8 @@ String getTimeString() {
 
 void enterDeepSleep() {
   if (!ntp_synced) return;
+  
+  if (millis() - sync_stable_timer < 10000) return;
 
   static unsigned long last_sleep_check = 0;
   if (millis() - last_sleep_check < 10000) return;
@@ -112,13 +115,12 @@ void enterDeepSleep() {
   int current_hour = timeinfo.tm_hour;
   int relayState = digitalRead(RELAY_PIN);
 
-  bool is_night = false;
-  if (current_hour >= 19 || current_hour < 8) is_night = true;
+  bool is_night = (current_hour >= 19 || current_hour < 8);
 
   if (is_night && relayState == LOW) {
     if (off_start_time == 0) {
       off_start_time = millis();
-      addLog("Night mode: Timer start (30m)");
+      addLog("Night mode active");
       return;
     }
     
@@ -135,8 +137,8 @@ void enterDeepSleep() {
       time_t then = mktime(&target_time);
       
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
-      if (sleep_us > 0) {
-        addLog("Sleep: Wake 8AM");
+      if (then > now) {
+        addLog("Deep Sleep -> 8AM");
         setINA219PowerDown();
         digitalWrite(RELAY_PIN, LOW);
         delay(200);
@@ -311,6 +313,7 @@ void maintainWiFi() {
       if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
         addLog("NTP Synced");
         ntp_synced = true;
+        sync_stable_timer = millis();
       }
     }
     
