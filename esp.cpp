@@ -79,7 +79,9 @@ void setINA219Active() {
   Wire.write(0x00);
   Wire.write((config_value >> 8) & 0xFF);
   Wire.write(config_value & 0xFF);
-  Wire.endTransmission();
+  if (Wire.endTransmission() != 0) {
+    ina219_found = false;
+  }
 }
 
 void loadSettings() {
@@ -103,7 +105,7 @@ void enterDeepSleep() {
   if (!ntp_synced) return;
 
   static unsigned long last_sleep_check = 0;
-  if (millis() - last_sleep_check < 10000) return;
+  if (millis() - last_sleep_check < 15000) return;
   last_sleep_check = millis();
 
   struct tm timeinfo;
@@ -112,21 +114,18 @@ void enterDeepSleep() {
   int current_hour = timeinfo.tm_hour;
   int relayState = digitalRead(RELAY_PIN);
 
-  bool is_night = false;
-  if (current_hour >= 19 || current_hour < 8) is_night = true;
+  bool is_night = (current_hour >= 19 || current_hour < 8);
 
   if (is_night && relayState == LOW) {
     if (off_start_time == 0) {
       off_start_time = millis();
-      addLog("Night mode: Timer start (5m)");
+      addLog("Night mode ready");
       return;
     }
     
     if (millis() - off_start_time >= 300000UL) {
       struct tm target_time = timeinfo;
-      if (current_hour >= 19) {
-        target_time.tm_mday++;
-      }
+      if (current_hour >= 19) target_time.tm_mday++;
       target_time.tm_hour = 8;
       target_time.tm_min = 0;
       target_time.tm_sec = 0;
@@ -136,10 +135,10 @@ void enterDeepSleep() {
       
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
       if (sleep_us > 0) {
-        addLog("Sleep: Wake 8AM");
+        addLog("Deep Sleep start");
         setINA219PowerDown();
         digitalWrite(RELAY_PIN, LOW);
-        delay(200);
+        delay(100);
         esp_sleep_enable_timer_wakeup(sleep_us);
         esp_deep_sleep_start();
       }
@@ -161,9 +160,7 @@ void handleToggle() {
 }
 
 void handleResetPeaks() {
-  peak_v = 0;
-  peak_c = 0;
-  peak_p = 0;
+  peak_v = 0; peak_c = 0; peak_p = 0;
   addLog("Peaks Reset");
   server.sendHeader("Location", "/");
   server.send(303);
@@ -171,16 +168,12 @@ void handleResetPeaks() {
 
 void handleRoot() {
   setINA219Active();
-  delay(60);
-  float v = ina219.getBusVoltage_V();
-  float c = ina219.getCurrent_mA();
-  float p = ina219.getPower_mW();
+  delay(65);
+  float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
+  float c = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
+  float p = (ina219_found) ? ina219.getPower_mW() : 0.0;
   setINA219PowerDown();
   
-  if (v > peak_v) peak_v = v;
-  if (c > peak_c) peak_c = c;
-  if (p > peak_p) peak_p = p;
-
   int relayState = digitalRead(RELAY_PIN);
   
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
@@ -192,32 +185,24 @@ void handleRoot() {
   html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
-  
-  html += "<h1>Solar System</h1><div class='card'>";
-  html += "<p>Time: " + getTimeString() + "</p>";
+  html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeString() + "</p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(c, 1) + " mA</b> <span class='peak'>(Peak: " + String(peak_c, 1) + ")</span></p>";
   html += "<p>Power: <b>" + String(p / 1000.0, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p / 1000.0, 2) + ")</span></p>";
   html += "<p>Relay State: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
+  if(!ina219_found) html += "<p style='color:red'><b>Warning: INA219 Sensor Lost</b></p>";
   html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak Values</button></div>";
-  
-  html += "<h2>Manual Control</h2><div class='card'>";
-  html += "<button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
+  html += "<h2>Manual Control</h2><div class='card'><button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
   html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
-
   html += "<h2>History</h2><div id='lb' class='log-box'>";
   for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
   html += "</div><script>var b=document.getElementById('lb');b.scrollTop=b.scrollHeight;</script>";
-  
   html += "<h2>Config</h2><div class='card'><form action='/save' method='POST'>";
   html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(voltage_low_cutoff_V, 1) + "'>";
   html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(voltage_high_on_threshold_V, 1) + "'>";
   html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(current_on_threshold_mA, 0) + "'>";
   html += "<button type='submit'>Apply Settings</button></form></div>";
-
-  html += "<h2>Update Firmware</h2><div class='card'>";
-  html += "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><button type='submit'>Upload BIN</button></form></div>";
-  
+  html += "<h2>Update</h2><div class='card'><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><button type='submit'>Upload BIN</button></form></div>";
   html += "<p style='text-align:center'><a href='/'>Manual Refresh</a></p></body></html>";
   server.send(200, "text/html", html);
 }
@@ -226,51 +211,56 @@ void handleSave() {
   if (server.hasArg("v_low")) voltage_low_cutoff_V = server.arg("v_low").toFloat();
   if (server.hasArg("v_high")) voltage_high_on_threshold_V = server.arg("v_high").toFloat();
   if (server.hasArg("c_high")) current_on_threshold_mA = server.arg("c_high").toFloat();
-  
   preferences.begin("solar_relay", false);
   preferences.putFloat("v_low", voltage_low_cutoff_V);
   preferences.putFloat("v_high", voltage_high_on_threshold_V);
   preferences.putFloat("c_high", current_on_threshold_mA);
   preferences.end();
-  
   addLog("Settings updated");
   server.sendHeader("Location", "/");
   server.send(303);
 }
 
 void checkAndControlRelay() {
-  static unsigned long last_read_time = 0;
-  if (millis() - last_read_time < 2000) return;
-  last_read_time = millis();
+  if (millis() < 5000) return;
+  static unsigned long last_read = 0;
+  static unsigned long current_interval = 10000;
+  
+  if (millis() - last_read < current_interval) return;
+  last_read = millis();
 
-  if (!ina219_found) return;
+  if (!ina219_found) {
+    ina219_found = ina219.begin();
+    if (!ina219_found) return;
+  }
   
   setINA219Active();
-  delay(60);
-  float current_voltage_V = ina219.getBusVoltage_V();
-  float current_mA = ina219.getCurrent_mA();
-  float current_mW = ina219.getPower_mW();
+  delay(65);
+  float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
+  float c = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
+  float p = (ina219_found) ? ina219.getPower_mW() : 0.0;
   setINA219PowerDown();
 
-  if (current_voltage_V > peak_v) peak_v = current_voltage_V;
-  if (current_mA > peak_c) peak_c = current_mA;
-  if (current_mW > peak_p) peak_p = current_mW;
+  if (v < 1.0) return;
 
-  int desired_state = last_stable_state;
-  if (current_voltage_V >= voltage_high_on_threshold_V && current_mA >= current_on_threshold_mA) {
-    desired_state = HIGH;
-  }
-  else if (current_voltage_V <= voltage_low_cutoff_V) {
-    desired_state = LOW;
-  }
+  if (v > peak_v) peak_v = v;
+  if (c > peak_c) peak_c = c;
+  if (p > peak_p) peak_p = p;
 
-  if (desired_state != last_stable_state) {
+  bool in_critical_zone = (abs(v - voltage_high_on_threshold_V) < 0.2) || (abs(v - voltage_low_cutoff_V) < 0.2);
+  current_interval = in_critical_zone ? 2000 : 10000;
+
+  int desired = last_stable_state;
+  if (v >= voltage_high_on_threshold_V && c >= current_on_threshold_mA) desired = HIGH;
+  else if (v <= voltage_low_cutoff_V) desired = LOW;
+
+  if (desired != last_stable_state) {
     if (debounce_timer_start == 0) debounce_timer_start = millis();
     if (millis() - debounce_timer_start >= debounce_delay_ms) {
-      digitalWrite(RELAY_PIN, desired_state);
-      last_stable_state = desired_state;
+      digitalWrite(RELAY_PIN, desired);
+      last_stable_state = desired;
       debounce_timer_start = 0;
-      addLog("Relay -> " + String(desired_state == HIGH ? "ON" : "OFF"));
+      addLog("Relay -> " + String(desired == HIGH ? "ON" : "OFF"));
     }
   } else {
     debounce_timer_start = 0;
@@ -280,48 +270,39 @@ void checkAndControlRelay() {
 void maintainWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     if (!is_online) {
-      addLog("WiFi Connected");
+      addLog("WiFi Online");
       is_online = true;
       configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-      
       server.on("/", handleRoot);
       server.on("/save", HTTP_POST, handleSave);
       server.on("/toggle", handleToggle);
       server.on("/reset_peaks", handleResetPeaks);
       server.on("/update", HTTP_POST, []() {
         server.sendHeader("Connection", "close");
-        server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK. REBOOTING...");
+        server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "REBOOTING...");
         delay(1000);
         ESP.restart();
       }, []() {
         HTTPUpload& upload = server.upload();
-        if (upload.status == UPLOAD_FILE_START) {
-          Update.begin(UPDATE_SIZE_UNKNOWN);
-        } else if (upload.status == UPLOAD_FILE_WRITE) {
-          Update.write(upload.buf, upload.currentSize);
-        } else if (upload.status == UPLOAD_FILE_END) {
-          Update.end(true);
-        }
+        if (upload.status == UPLOAD_FILE_START) Update.begin(UPDATE_SIZE_UNKNOWN);
+        else if (upload.status == UPLOAD_FILE_WRITE) Update.write(upload.buf, upload.currentSize);
+        else if (upload.status == UPLOAD_FILE_END) Update.end(true);
       });
       server.begin();
     }
-
     if (!ntp_synced) {
-      struct tm timeinfo;
-      if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
+      struct tm ti;
+      if (getLocalTime(&ti) && ti.tm_year > 120) {
         addLog("NTP Synced");
         ntp_synced = true;
       }
     }
-    
     server.handleClient();
   } else {
     if (is_online) {
-      addLog("WiFi Connection Lost");
-      is_online = false;
-      ntp_synced = false;
+      is_online = false; ntp_synced = false;
+      addLog("WiFi Lost");
     }
-    
     if (millis() - last_wifi_check > wifi_check_interval || last_wifi_check == 0) {
       last_wifi_check = millis();
       WiFi.begin(ssid);
@@ -332,12 +313,24 @@ void maintainWiFi() {
 void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW); 
+  last_stable_state = LOW;
+  
+  struct tm tm_reset;
+  tm_reset.tm_year = 70; 
+  tm_reset.tm_mon = 0;
+  tm_reset.tm_mday = 1;
+  tm_reset.tm_hour = 0;
+  tm_reset.tm_min = 0;
+  tm_reset.tm_sec = 0;
+  time_t t_reset = mktime(&tm_reset);
+  struct timeval tv = { .tv_sec = t_reset };
+  settimeofday(&tv, NULL);
 
   Wire.begin(SDA_PIN, SCL_PIN);
   ina219_found = ina219.begin();
-
+  if (ina219_found) setINA219PowerDown();
+  
   loadSettings();
-
   WiFi.mode(WIFI_STA);
   WiFi.config(local_IP, gateway, subnet);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
@@ -348,10 +341,6 @@ void setup() {
 void loop() {
   checkAndControlRelay();
   maintainWiFi();
-
-  if (is_online && ntp_synced) {
-    enterDeepSleep();
-  }
-  
-  delay(10);
+  if (is_online && ntp_synced) enterDeepSleep();
+  delay(20);
 }
