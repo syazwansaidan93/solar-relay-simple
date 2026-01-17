@@ -29,6 +29,9 @@ Preferences preferences;
 float voltage_low_cutoff_V;
 float voltage_high_on_threshold_V;
 float current_on_threshold_mA;
+int wake_h;
+int wake_m;
+String last_sleep_time = "Never";
 
 float peak_v = 0, peak_c = 0, peak_p = 0;
 
@@ -89,8 +92,10 @@ void loadSettings() {
   voltage_low_cutoff_V = preferences.getFloat("v_low", 12.1);
   voltage_high_on_threshold_V = preferences.getFloat("v_high", 13.2);
   current_on_threshold_mA = preferences.getFloat("c_high", 150.0);
+  wake_h = preferences.getInt("wake_h", 8);
+  wake_m = preferences.getInt("wake_m", 0);
+  last_sleep_time = preferences.getString("last_sleep", "Never");
   preferences.end();
-  addLog("Settings Loaded");
 }
 
 String getTimeString() {
@@ -111,23 +116,23 @@ void enterDeepSleep() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return;
 
-  int current_hour = timeinfo.tm_hour;
+  int current_total_mins = (timeinfo.tm_hour * 60) + timeinfo.tm_min;
+  int wake_total_mins = (wake_h * 60) + wake_m;
   int relayState = digitalRead(RELAY_PIN);
 
-  bool is_night = (current_hour >= 19 || current_hour < 8);
+  bool is_night = (timeinfo.tm_hour >= 19 || current_total_mins < wake_total_mins);
 
   if (is_night && relayState == LOW) {
     if (off_start_time == 0) {
       off_start_time = millis();
-      addLog("Night mode ready");
       return;
     }
     
     if (millis() - off_start_time >= 300000UL) {
       struct tm target_time = timeinfo;
-      if (current_hour >= 19) target_time.tm_mday++;
-      target_time.tm_hour = 8;
-      target_time.tm_min = 0;
+      if (timeinfo.tm_hour >= 19) target_time.tm_mday++;
+      target_time.tm_hour = wake_h;
+      target_time.tm_min = wake_m;
       target_time.tm_sec = 0;
       
       time_t now = mktime(&timeinfo);
@@ -135,7 +140,10 @@ void enterDeepSleep() {
       
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
       if (sleep_us > 0) {
-        addLog("Deep Sleep start");
+        preferences.begin("solar_relay", false);
+        preferences.putString("last_sleep", getTimeString());
+        preferences.end();
+
         setINA219PowerDown();
         digitalWrite(RELAY_PIN, LOW);
         delay(100);
@@ -166,6 +174,18 @@ void handleResetPeaks() {
   server.send(303);
 }
 
+void handleUpdatePage() {
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
+  html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
+  html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;}";
+  html += "input{width:100%;margin-bottom:10px;}</style></head><body>";
+  html += "<h1>Firmware Update</h1><div class='card'><form method='POST' action='/update_exec' enctype='multipart/form-data'>";
+  html += "<input type='file' name='update'><button type='submit'>Upload BIN</button></form></div>";
+  html += "<p><a href='/'>Back Home</a></p></body></html>";
+  server.send(200, "text/html", html);
+}
+
 void handleRoot() {
   setINA219Active();
   delay(65);
@@ -186,13 +206,12 @@ void handleRoot() {
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeString() + "</p>";
+  html += "<p>Last Sleep: <small>" + last_sleep_time + "</small></p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(c, 1) + " mA</b> <span class='peak'>(Peak: " + String(peak_c, 1) + ")</span></p>";
-  html += "<p>Power: <b>" + String(p / 1000.0, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p / 1000.0, 2) + ")</span></p>";
-  html += "<p>Relay State: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
-  if(!ina219_found) html += "<p style='color:red'><b>Warning: INA219 Sensor Lost</b></p>";
+  html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
   html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak Values</button></div>";
-  html += "<h2>Manual Control</h2><div class='card'><button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
+  html += "<h2>Control</h2><div class='card'><button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
   html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
   html += "<h2>History</h2><div id='lb' class='log-box'>";
   for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
@@ -201,9 +220,10 @@ void handleRoot() {
   html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(voltage_low_cutoff_V, 1) + "'>";
   html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(voltage_high_on_threshold_V, 1) + "'>";
   html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(current_on_threshold_mA, 0) + "'>";
+  html += "Wake Hour (0-23): <input type='number' name='wake_h' value='" + String(wake_h) + "'>";
+  html += "Wake Minute (0-59): <input type='number' name='wake_m' value='" + String(wake_m) + "'>";
   html += "<button type='submit'>Apply Settings</button></form></div>";
-  html += "<h2>Update</h2><div class='card'><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><button type='submit'>Upload BIN</button></form></div>";
-  html += "<p style='text-align:center'><a href='/'>Manual Refresh</a></p></body></html>";
+  html += "<p style='text-align:center'><a href='/update'>Firmware Update</a> | <a href='/'>Refresh</a></p></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -211,10 +231,14 @@ void handleSave() {
   if (server.hasArg("v_low")) voltage_low_cutoff_V = server.arg("v_low").toFloat();
   if (server.hasArg("v_high")) voltage_high_on_threshold_V = server.arg("v_high").toFloat();
   if (server.hasArg("c_high")) current_on_threshold_mA = server.arg("c_high").toFloat();
+  if (server.hasArg("wake_h")) wake_h = server.arg("wake_h").toInt();
+  if (server.hasArg("wake_m")) wake_m = server.arg("wake_m").toInt();
   preferences.begin("solar_relay", false);
   preferences.putFloat("v_low", voltage_low_cutoff_V);
   preferences.putFloat("v_high", voltage_high_on_threshold_V);
   preferences.putFloat("c_high", current_on_threshold_mA);
+  preferences.putInt("wake_h", wake_h);
+  preferences.putInt("wake_m", wake_m);
   preferences.end();
   addLog("Settings updated");
   server.sendHeader("Location", "/");
@@ -277,7 +301,8 @@ void maintainWiFi() {
       server.on("/save", HTTP_POST, handleSave);
       server.on("/toggle", handleToggle);
       server.on("/reset_peaks", handleResetPeaks);
-      server.on("/update", HTTP_POST, []() {
+      server.on("/update", handleUpdatePage);
+      server.on("/update_exec", HTTP_POST, []() {
         server.sendHeader("Connection", "close");
         server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "REBOOTING...");
         delay(1000);
