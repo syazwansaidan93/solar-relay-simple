@@ -182,7 +182,24 @@ void handleUpdatePage() {
   html += "input{width:100%;margin-bottom:10px;}</style></head><body>";
   html += "<h1>Firmware Update</h1><div class='card'><form method='POST' action='/update_exec' enctype='multipart/form-data'>";
   html += "<input type='file' name='update'><button type='submit'>Upload BIN</button></form></div>";
-  html += "<p><a href='/'>Back Home</a></p></body></html>";
+  html += "<p style='text-align:center'><a href='/'>Back Home</a></p></body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleConfigPage() {
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
+  html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
+  html += "input{width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;border:1px solid #ccc;border-radius:4px;}";
+  html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;}</style></head><body>";
+  html += "<h1>Configuration</h1><div class='card'><form action='/save' method='POST'>";
+  html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(voltage_low_cutoff_V, 1) + "'>";
+  html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(voltage_high_on_threshold_V, 1) + "'>";
+  html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(current_on_threshold_mA, 0) + "'>";
+  html += "Wake Hour (0-23): <input type='number' name='wake_h' value='" + String(wake_h) + "'>";
+  html += "Wake Minute (0-59): <input type='number' name='wake_m' value='" + String(wake_m) + "'>";
+  html += "<button type='submit'>Save Changes</button></form></div>";
+  html += "<p style='text-align:center'><a href='/'>Back Home</a></p></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -200,7 +217,6 @@ void handleRoot() {
   html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
   html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
   html += ".status{font-weight:bold;color:" + String(relayState == HIGH ? "#2e7d32" : "#c62828") + ";}";
-  html += "input{width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;border:1px solid #ccc;border-radius:4px;}";
   html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
   html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
@@ -216,14 +232,7 @@ void handleRoot() {
   html += "<h2>History</h2><div id='lb' class='log-box'>";
   for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
   html += "</div><script>var b=document.getElementById('lb');b.scrollTop=b.scrollHeight;</script>";
-  html += "<h2>Config</h2><div class='card'><form action='/save' method='POST'>";
-  html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(voltage_low_cutoff_V, 1) + "'>";
-  html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(voltage_high_on_threshold_V, 1) + "'>";
-  html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(current_on_threshold_mA, 0) + "'>";
-  html += "Wake Hour (0-23): <input type='number' name='wake_h' value='" + String(wake_h) + "'>";
-  html += "Wake Minute (0-59): <input type='number' name='wake_m' value='" + String(wake_m) + "'>";
-  html += "<button type='submit'>Apply Settings</button></form></div>";
-  html += "<p style='text-align:center'><a href='/update'>Firmware Update</a> | <a href='/'>Refresh</a></p></body></html>";
+  html += "<p style='text-align:center'><a href='/config'>Config Settings</a> | <a href='/update'>Firmware Update</a> | <a href='/'>Refresh</a></p></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -298,6 +307,7 @@ void maintainWiFi() {
       is_online = true;
       configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
       server.on("/", handleRoot);
+      server.on("/config", handleConfigPage);
       server.on("/save", HTTP_POST, handleSave);
       server.on("/toggle", handleToggle);
       server.on("/reset_peaks", handleResetPeaks);
