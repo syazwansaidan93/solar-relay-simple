@@ -98,7 +98,15 @@ void loadSettings() {
   preferences.end();
 }
 
-String getTimeString() {
+String getTimeStringHHMM() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return "N/A";
+  char buff[6];
+  strftime(buff, sizeof(buff), "%H:%M", &timeinfo);
+  return String(buff);
+}
+
+String getTimeStringFull() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return "Time Not Synced";
   char timeStringBuff[20];
@@ -128,7 +136,7 @@ void enterDeepSleep() {
       return;
     }
     
-    if (millis() - off_start_time >= 300000UL) {
+    if (millis() - off_start_time >= 60000UL) {
       struct tm target_time = timeinfo;
       if (timeinfo.tm_hour >= 19) target_time.tm_mday++;
       target_time.tm_hour = wake_h;
@@ -140,8 +148,9 @@ void enterDeepSleep() {
       
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
       if (sleep_us > 0) {
+        String ts = getTimeStringHHMM();
         preferences.begin("solar_relay", false);
-        preferences.putString("last_sleep", getTimeString());
+        preferences.putString("last_sleep", ts);
         preferences.end();
 
         setINA219PowerDown();
@@ -221,8 +230,8 @@ void handleRoot() {
   html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
-  html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeString() + "</p>";
-  html += "<p>Last Sleep: <small>" + last_sleep_time + "</small></p>";
+  html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeStringFull() + "</p>";
+  html += "<p>Last Sleep: <b>" + last_sleep_time + "</b></p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(c, 1) + " mA</b> <span class='peak'>(Peak: " + String(peak_c, 1) + ")</span></p>";
   html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
