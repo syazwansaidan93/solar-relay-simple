@@ -137,6 +137,18 @@ void enterDeepSleep() {
     }
     
     if (millis() - off_start_time >= 60000UL) {
+      String ts = getTimeStringHHMM();
+      
+      preferences.begin("solar_relay", false);
+      preferences.putString("last_sleep", ts);
+      preferences.end();
+      
+      addLog("Grateful Sleep Init...");
+      delay(200);
+
+      setINA219PowerDown();
+      digitalWrite(RELAY_PIN, LOW);
+      
       struct tm target_time = timeinfo;
       if (timeinfo.tm_hour >= 19) target_time.tm_mday++;
       target_time.tm_hour = wake_h;
@@ -145,17 +157,9 @@ void enterDeepSleep() {
       
       time_t now = mktime(&timeinfo);
       time_t then = mktime(&target_time);
-      
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
-      if (sleep_us > 0) {
-        String ts = getTimeStringHHMM();
-        preferences.begin("solar_relay", false);
-        preferences.putString("last_sleep", ts);
-        preferences.end();
 
-        setINA219PowerDown();
-        digitalWrite(RELAY_PIN, LOW);
-        delay(100);
+      if (sleep_us > 0) {
         esp_sleep_enable_timer_wakeup(sleep_us);
         esp_deep_sleep_start();
       }
