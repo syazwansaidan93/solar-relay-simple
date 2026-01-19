@@ -201,10 +201,12 @@ void handleRoot() {
   setINA219Active();
   delay(65);
   float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c = (ina219_found) ? (ina219.getCurrent_mA() / 1000.0) : 0.0;
-  float p = (ina219_found) ? (ina219.getPower_mW() / 1000.0) : 0.0;
+  float c_mA = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
+  float p_mW = (ina219_found) ? ina219.getPower_mW() : 0.0;
   setINA219PowerDown();
   
+  float current_A = c_mA / 1000.0;
+  float power_W = p_mW / 1000.0;
   float peak_c_display = peak_c / 1000.0;
   float peak_p_display = peak_p / 1000.0;
   
@@ -220,8 +222,8 @@ void handleRoot() {
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeStringFull() + "</p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
-  html += "<p>Current: <b>" + String(c, 3) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 3) + ")</span></p>";
-  html += "<p>Power: <b>" + String(p, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
+  html += "<p>Current: <b>" + String(current_A, 3) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 3) + ")</span></p>";
+  html += "<p>Power: <b>" + String(power_W, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
   html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
   html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak Values</button></div>";
   html += "<h2>Control</h2><div class='card'><button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
