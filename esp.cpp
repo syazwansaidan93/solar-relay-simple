@@ -222,7 +222,7 @@ void handleRoot() {
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeStringFull() + "</p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
-  html += "<p>Current: <b>" + String(current_A, 3) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 3) + ")</span></p>";
+  html += "<p>Current: <b>" + String(current_A, 2) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 2) + ")</span></p>";
   html += "<p>Power: <b>" + String(power_W, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
   html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
   html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak Values</button></div>";
