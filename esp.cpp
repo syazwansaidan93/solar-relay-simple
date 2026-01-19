@@ -31,7 +31,6 @@ float voltage_high_on_threshold_V;
 float current_on_threshold_mA;
 int wake_h;
 int wake_m;
-String last_sleep_time = "Never";
 
 float peak_v = 0, peak_c = 0, peak_p = 0;
 
@@ -94,16 +93,7 @@ void loadSettings() {
   current_on_threshold_mA = preferences.getFloat("c_high", 150.0);
   wake_h = preferences.getInt("wake_h", 8);
   wake_m = preferences.getInt("wake_m", 0);
-  last_sleep_time = preferences.getString("last_sleep", "Never");
   preferences.end();
-}
-
-String getTimeStringHHMM() {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return "N/A";
-  char buff[6];
-  strftime(buff, sizeof(buff), "%H:%M", &timeinfo);
-  return String(buff);
 }
 
 String getTimeStringFull() {
@@ -137,18 +127,6 @@ void enterDeepSleep() {
     }
     
     if (millis() - off_start_time >= 60000UL) {
-      String ts = getTimeStringHHMM();
-      
-      preferences.begin("solar_relay", false);
-      preferences.putString("last_sleep", ts);
-      preferences.end();
-      
-      addLog("Grateful Sleep Init...");
-      delay(200);
-
-      setINA219PowerDown();
-      digitalWrite(RELAY_PIN, LOW);
-      
       struct tm target_time = timeinfo;
       if (timeinfo.tm_hour >= 19) target_time.tm_mday++;
       target_time.tm_hour = wake_h;
@@ -160,6 +138,9 @@ void enterDeepSleep() {
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
 
       if (sleep_us > 0) {
+        setINA219PowerDown();
+        digitalWrite(RELAY_PIN, LOW);
+        delay(100);
         esp_sleep_enable_timer_wakeup(sleep_us);
         esp_deep_sleep_start();
       }
@@ -235,7 +216,6 @@ void handleRoot() {
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeStringFull() + "</p>";
-  html += "<p>Last Sleep: <b>" + last_sleep_time + "</b></p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(c, 1) + " mA</b> <span class='peak'>(Peak: " + String(peak_c, 1) + ")</span></p>";
   html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
