@@ -1,81 +1,81 @@
 # Solar Relay Controller (ESP32 + INA219)
 
-This project is an **ESP32-based solar power relay controller** with a built-in **web dashboard**, **automatic relay control**, **deep sleep scheduling**, and **OTA firmware update** support. It is designed for **solar battery systems** where relay activation depends on voltage and current thresholds, while minimizing power consumption during night hours.
+This project is an **ESP32-based solar relay controller** designed for **12V solar battery systems**. It monitors **voltage, current, and power** using an INA219 sensor, controls a relay automatically based on configurable thresholds, provides a **web-based dashboard**, supports **OTA firmware updates**, and enters **deep sleep at night** to minimize power usage.
 
 ---
 
 ## ✨ Features
 
-* 🔋 **INA219 voltage, current & power monitoring**
-* 🔁 **Automatic relay control** based on:
-
-  * Battery voltage (low cutoff & high-on threshold)
-  * Minimum charging current
-* 🕒 **NTP time synchronization** (local router supported)
-* 🌙 **Automatic deep sleep at night** to save power
-* 🌐 **Web-based dashboard** (no external dependencies)
-* 🛠 **Runtime configuration via web UI**
-* 📈 **Peak voltage/current tracking**
-* 🧾 **Event log history (ring buffer)**
+* 🔋 **INA219 monitoring** (Voltage, Current, Power)
+* 🔁 **Automatic relay control** with debounce protection
+* 🌐 **Web dashboard** (mobile-friendly, no external JS/CSS)
+* 🧾 **Event log with timestamps**
+* 📈 **Peak voltage / current / power tracking**
+* ⚙️ **Runtime configuration via web UI**
+* 🌙 **Night-time deep sleep scheduling**
+* 🕒 **NTP time sync (router-supported)**
 * 🔄 **OTA firmware update via browser**
-* 💾 **Persistent settings using NVS (Preferences)**
+* 💾 **Persistent configuration using ESP32 Preferences (NVS)**
+* ⚡ **Power-optimized INA219 active / power-down control**
 
 ---
 
 ## 🧩 Hardware Requirements
 
-* ESP32 (tested on ESP32-S3 class boards)
-* INA219 current/voltage sensor (I2C)
-* Relay module (active HIGH)
-* Solar battery system (12V typical)
+* ESP32 (tested on ESP32-C3 class boards)
+* INA219 current & voltage sensor (I2C)
+* Relay module (**active HIGH**)
+* 12V solar battery system
 
 ### Pin Mapping
 
-| Function      | Pin    |
+| Function      | GPIO   |
 | ------------- | ------ |
-| Relay control | GPIO 5 |
+| Relay Control | GPIO 5 |
 | INA219 SDA    | GPIO 8 |
 | INA219 SCL    | GPIO 9 |
 
-INA219 I2C address: `0x40`
+INA219 I2C Address: `0x40`
 
 ---
 
 ## ⚙️ Default Configuration
 
-| Setting                | Default    |
-| ---------------------- | ---------- |
-| Low voltage cutoff     | 12.1 V     |
-| High voltage ON        | 13.2 V     |
-| Min current to turn ON | 150 mA     |
-| Wake-up time           | 08:00      |
-| Debounce delay         | 60 seconds |
-| Night sleep start      | 19:00      |
+| Setting              | Default Value  |
+| -------------------- | -------------- |
+| Low voltage cutoff   | **12.1 V**     |
+| High voltage ON      | **13.2 V**     |
+| Minimum ON current   | **150 mA**     |
+| Wake-up time         | **08:00**      |
+| Relay debounce delay | **60 seconds** |
+| Night start time     | **19:00**      |
 
-All values can be changed from the **web configuration page**.
+All values can be modified via the web configuration page.
 
 ---
 
 ## 🌐 Web Interface
 
-Once connected to WiFi, open:
+After connecting to WiFi, open:
 
 ```
 http://192.168.1.5/
 ```
 
-### Pages
+### Available Pages
 
-* `/` → Dashboard
-* `/config` → Threshold & schedule configuration
-* `/update` → OTA firmware upload
+| Path      | Description         |
+| --------- | ------------------- |
+| `/`       | Dashboard           |
+| `/config` | Configuration page  |
+| `/update` | OTA firmware upload |
 
-### Dashboard Shows
+### Dashboard Displays
 
-* Current date & time
-* Last deep sleep time
-* Voltage, current, relay status
-* Peak voltage & current
+* Current date & time (NTP synced)
+* Live voltage (V), current (A), power (W)
+* Peak voltage, current, and power
+* Relay status (ACTIVE / INACTIVE)
 * Manual relay control buttons
 * Event log history
 
@@ -83,72 +83,75 @@ http://192.168.1.5/
 
 ## 🔁 Relay Control Logic
 
-Relay behavior is evaluated periodically:
+The relay is evaluated periodically using this logic:
 
 ```text
-IF voltage >= HIGH threshold
-AND current >= current threshold
+IF voltage >= High Threshold
+AND current >= Current Threshold
 → Relay ON
 
-IF voltage <= LOW cutoff
+IF voltage <= Low Cutoff
 → Relay OFF
 ```
 
-Additional logic:
+Additional protections:
 
-* Adaptive sampling rate near threshold
-* 60-second debounce before relay state changes
+* 60-second debounce before switching
+* Adaptive sampling near threshold values
 * Manual override via web UI
 
 ---
 
 ## 🌙 Deep Sleep Logic
 
-The ESP32 enters deep sleep when:
+The ESP32 enters deep sleep when **all conditions** below are met:
 
-* NTP time is synced
-* Time is night (≥ 19:00)
+* NTP time is synchronized
+* Current time is night (≥ 19:00 or before wake time)
 * Relay is OFF
-* Condition persists for 5 minutes
+* Condition persists for ≥ 60 seconds
 
-It wakes automatically at the configured **wake-up time**.
+Wake-up occurs automatically at the configured **wake time**.
 
-INA219 is put into **power-down mode** before sleep to reduce consumption.
+Before sleeping:
+
+* INA219 is set to **power-down mode**
+* Relay is forced OFF
 
 ---
 
 ## 📶 WiFi Behavior
 
 * Static IP: `192.168.1.5`
-* Auto reconnect enabled
-* Periodic reconnect attempts every 30s
-* NTP server: `192.168.1.1`
+* Auto-reconnect enabled
+* Reconnect attempt every 30 seconds
 * Reduced TX power for lower consumption
+* NTP server: `192.168.1.1`
 
 ---
 
 ## 🔄 OTA Firmware Update
 
-* Upload `.bin` file from `/update`
-* Automatic reboot after successful update
-* No authentication (intended for trusted LAN use)
+* Upload `.bin` file via `/update`
+* Automatic reboot after successful upload
+* Intended for **trusted LAN environments** (no authentication)
 
 ---
 
-## 🧠 Power Optimization Techniques
+## ⚡ Power Optimization Techniques
 
-* INA219 manually switched between ACTIVE / POWER-DOWN
-* Adaptive measurement intervals
-* Deep sleep scheduling
+* INA219 manually toggled between ACTIVE / POWER-DOWN
 * Reduced WiFi TX power
+* Adaptive sensor sampling interval
+* Automatic night deep sleep
 
 ---
 
 ## ⚠️ Notes & Warnings
 
-* No authentication on web UI (LAN-only usage recommended)
-* Relay logic assumes **active HIGH relay module**
-* Designed for **monitoring & control**, not safety-critical systems
+* No authentication on web interface (LAN use only)
+* Relay module must be **active HIGH**
+* Not intended for safety-critical or certified power systems
 
 ---
 
@@ -160,6 +163,6 @@ MIT License
 
 ## 🙌 Author
 
-Created for DIY solar monitoring & relay automation using ESP32.
+DIY solar relay controller using ESP32 + INA219.
 
 Feel free to fork, modify, and improve.
