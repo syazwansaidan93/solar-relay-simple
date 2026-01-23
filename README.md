@@ -30,28 +30,6 @@ This project is an **ESP32-based solar relay controller** designed for **12V sol
 
 * ⚡ **Power-optimized INA219 active / power-down control**
 
-* 🔋 **INA219 monitoring** (Voltage, Current, Power)
-
-* 🔁 **Automatic relay control** with debounce protection
-
-* 🌐 **Web dashboard** (mobile-friendly, no external JS/CSS)
-
-* 🧾 **Event log with timestamps**
-
-* 📈 **Peak voltage / current / power tracking**
-
-* ⚙️ **Runtime configuration via web UI**
-
-* 🌙 **Night-time deep sleep scheduling**
-
-* 🕒 **NTP time sync (router-supported)**
-
-* 🔄 **OTA firmware update via browser**
-
-* 💾 **Persistent configuration using ESP32 Preferences (NVS)**
-
-* ⚡ **Power-optimized INA219 active / power-down control**
-
 ---
 
 ## 🧩 Hardware Requirements
