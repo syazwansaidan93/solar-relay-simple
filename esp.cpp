@@ -33,6 +33,8 @@ int wake_h;
 int wake_m;
 
 float peak_v = 0, peak_c = 0, peak_p = 0;
+float total_Wh = 0;
+unsigned long last_energy_calc_ms = 0;
 
 unsigned long debounce_delay_ms = 60000;
 unsigned long debounce_timer_start = 0;
@@ -162,8 +164,8 @@ void handleToggle() {
 }
 
 void handleResetPeaks() {
-  peak_v = 0; peak_c = 0; peak_p = 0;
-  addLog("Peaks Reset");
+  peak_v = 0; peak_c = 0; peak_p = 0; total_Wh = 0;
+  addLog("Stats Reset");
   server.sendHeader("Location", "/");
   server.send(303);
 }
@@ -224,8 +226,9 @@ void handleRoot() {
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(current_A, 2) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 2) + ")</span></p>";
   html += "<p>Power: <b>" + String(power_W, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
+  html += "<p>Energy: <b>" + String(total_Wh, 3) + " Wh</b></p>";
   html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
-  html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak Values</button></div>";
+  html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak/Energy Values</button></div>";
   html += "<h2>Control</h2><div class='card'><button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
   html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
   html += "<h2>History</h2><div id='lb' class='log-box'>";
@@ -258,8 +261,11 @@ void checkAndControlRelay() {
   static unsigned long last_read = 0;
   static unsigned long current_interval = 10000;
   
-  if (millis() - last_read < current_interval) return;
-  last_read = millis();
+  unsigned long now_ms = millis();
+  if (now_ms - last_read < current_interval) return;
+  
+  float time_diff_hours = (now_ms - last_read) / 3600000.0;
+  last_read = now_ms;
 
   if (!ina219_found) {
     ina219_found = ina219.begin();
@@ -278,6 +284,8 @@ void checkAndControlRelay() {
   if (v > peak_v) peak_v = v;
   if (c > peak_c) peak_c = c;
   if (p > peak_p) peak_p = p;
+  
+  total_Wh += (p / 1000.0) * time_diff_hours;
 
   bool in_critical_zone = (abs(v - voltage_high_on_threshold_V) < 0.2) || (abs(v - voltage_low_cutoff_V) < 0.2);
   current_interval = in_critical_zone ? 2000 : 10000;
