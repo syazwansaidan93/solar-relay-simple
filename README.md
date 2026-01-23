@@ -7,15 +7,49 @@ This project is an **ESP32-based solar relay controller** designed for **12V sol
 ## ✨ Features
 
 * 🔋 **INA219 monitoring** (Voltage, Current, Power)
+
 * 🔁 **Automatic relay control** with debounce protection
+
 * 🌐 **Web dashboard** (mobile-friendly, no external JS/CSS)
+
 * 🧾 **Event log with timestamps**
+
 * 📈 **Peak voltage / current / power tracking**
+
+* ⚡ **Total energy accumulation (Wh)**
+
 * ⚙️ **Runtime configuration via web UI**
+
 * 🌙 **Night-time deep sleep scheduling**
+
 * 🕒 **NTP time sync (router-supported)**
+
 * 🔄 **OTA firmware update via browser**
+
 * 💾 **Persistent configuration using ESP32 Preferences (NVS)**
+
+* ⚡ **Power-optimized INA219 active / power-down control**
+
+* 🔋 **INA219 monitoring** (Voltage, Current, Power)
+
+* 🔁 **Automatic relay control** with debounce protection
+
+* 🌐 **Web dashboard** (mobile-friendly, no external JS/CSS)
+
+* 🧾 **Event log with timestamps**
+
+* 📈 **Peak voltage / current / power tracking**
+
+* ⚙️ **Runtime configuration via web UI**
+
+* 🌙 **Night-time deep sleep scheduling**
+
+* 🕒 **NTP time sync (router-supported)**
+
+* 🔄 **OTA firmware update via browser**
+
+* 💾 **Persistent configuration using ESP32 Preferences (NVS)**
+
 * ⚡ **Power-optimized INA219 active / power-down control**
 
 ---
@@ -73,15 +107,69 @@ http://192.168.1.5/
 ### Dashboard Displays
 
 * Current date & time (NTP synced)
+
 * Live voltage (V), current (A), power (W)
+
+* **Total accumulated energy (Wh)**
+
 * Peak voltage, current, and power
+
 * Relay status (ACTIVE / INACTIVE)
+
 * Manual relay control buttons
+
+* Event log history
+
+* Current date & time (NTP synced)
+
+* Live voltage (V), current (A), power (W)
+
+* Peak voltage, current, and power
+
+* Relay status (ACTIVE / INACTIVE)
+
+* Manual relay control buttons
+
 * Event log history
 
 ---
 
 ## 🔁 Relay Control Logic
+
+The relay is evaluated periodically using this logic:
+
+```text
+IF voltage >= High Threshold
+AND current >= Current Threshold
+→ Relay ON
+
+IF voltage <= Low Cutoff
+→ Relay OFF
+```
+
+Additional protections:
+
+* 60-second debounce before switching
+* Adaptive sampling near threshold values
+* Manual override via web UI
+
+---
+
+## ⚡ Energy Calculation (Wh)
+
+The system continuously integrates power over time to calculate total energy:
+
+```text
+Energy (Wh) += Power (W) × Time Interval (hours)
+```
+
+Energy is:
+
+* Calculated in `checkAndControlRelay()`
+* Resettable from the web UI
+* Stored in RAM (resets on reboot)
+
+This allows basic daily or session-based solar energy tracking.
 
 The relay is evaluated periodically using this logic:
 
