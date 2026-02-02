@@ -1,234 +1,214 @@
 # Solar Relay Controller (ESP32 + INA219)
 
-This project is an **ESP32-based solar relay controller** designed for **12V solar battery systems**. It monitors **voltage, current, and power** using an INA219 sensor, controls a relay automatically based on configurable thresholds, provides a **web-based dashboard**, supports **OTA firmware updates**, and enters **deep sleep at night** to minimize power usage.
+This project is a **smart solar relay controller** using **ESP32-C3** and **INA219 current/voltage sensor**. It automatically turns a relay ON/OFF based on battery voltage, charging current, and time schedule, with a built-in web dashboard and OTA firmware update.
 
 ---
 
-## ✨ Features
+## Features
 
-* 🔋 **INA219 monitoring** (Voltage, Current, Power)
+* Real-time monitoring:
 
-* 🔁 **Automatic relay control** with debounce protection
+  * Voltage (V)
+  * Current (A)
+  * Power (W)
+  * Energy (Wh)
 
-* 🌐 **Web dashboard** (mobile-friendly, no external JS/CSS)
+* Smart relay logic:
 
-* 🧾 **Event log with timestamps**
+  * Turns ON when battery is sufficiently charged
+  * Turns OFF when battery drops too low
+  * Debounced switching (stable state protection)
 
-* 📈 **Peak voltage / current / power tracking**
+* Maintenance mode:
 
-* ⚡ **Total energy accumulation (Wh)**
+  * Every **15th day of month** forces relay OFF (full charge day)
 
-* ⚙️ **Runtime configuration via web UI**
+* Night deep sleep:
 
-* 🌙 **Night-time deep sleep scheduling**
+  * Automatically sleeps at night
+  * Wakes up at configurable time
 
-* 🕒 **NTP time sync (router-supported)**
+* Web dashboard:
 
-* 🔄 **OTA firmware update via browser**
+  * Live stats
+  * Manual relay control
+  * Event logs
+  * Config page
 
-* 💾 **Persistent configuration using ESP32 Preferences (NVS)**
-
-* ⚡ **Power-optimized INA219 active / power-down control**
-
----
-
-## 🧩 Hardware Requirements
-
-* ESP32 (tested on ESP32-C3 class boards)
-* INA219 current & voltage sensor (I2C)
-* Relay module (**active HIGH**)
-* 12V solar battery system
-
-### Pin Mapping
-
-| Function      | GPIO   |
-| ------------- | ------ |
-| Relay Control | GPIO 5 |
-| INA219 SDA    | GPIO 8 |
-| INA219 SCL    | GPIO 9 |
-
-INA219 I2C Address: `0x40`
+* OTA firmware update via browser
 
 ---
 
-## ⚙️ Default Configuration
+## Hardware
 
-| Setting              | Default Value  |
-| -------------------- | -------------- |
-| Low voltage cutoff   | **12.1 V**     |
-| High voltage ON      | **13.2 V**     |
-| Minimum ON current   | **150 mA**     |
-| Wake-up time         | **08:00**      |
-| Relay debounce delay | **60 seconds** |
-| Night start time     | **19:00**      |
+| Component    | Description              |
+| ------------ | ------------------------ |
+| ESP32-C3     | Main controller          |
+| INA219       | Voltage & current sensor |
+| Relay Module | Controls load            |
+| Battery      | Lead-acid / Li-ion       |
+| Solar MPPT   | Battery charger          |
 
-All values can be modified via the web configuration page.
-
----
-
-## 🌐 Web Interface
-
-After connecting to WiFi, open:
+### Default Pins
 
 ```
-http://192.168.1.5/
+Relay   -> GPIO 5
+SDA     -> GPIO 8
+SCL     -> GPIO 9
+INA219  -> I2C (0x40)
 ```
-
-### Available Pages
-
-| Path      | Description         |
-| --------- | ------------------- |
-| `/`       | Dashboard           |
-| `/config` | Configuration page  |
-| `/update` | OTA firmware upload |
-
-### Dashboard Displays
-
-* Current date & time (NTP synced)
-
-* Live voltage (V), current (A), power (W)
-
-* **Total accumulated energy (Wh)**
-
-* Peak voltage, current, and power
-
-* Relay status (ACTIVE / INACTIVE)
-
-* Manual relay control buttons
-
-* Event log history
-
-* Current date & time (NTP synced)
-
-* Live voltage (V), current (A), power (W)
-
-* Peak voltage, current, and power
-
-* Relay status (ACTIVE / INACTIVE)
-
-* Manual relay control buttons
-
-* Event log history
 
 ---
 
-## 🔁 Relay Control Logic
+## Network
 
-The relay is evaluated periodically using this logic:
+Static IP:
 
-```text
-IF voltage >= High Threshold
-AND current >= Current Threshold
-→ Relay ON
-
-IF voltage <= Low Cutoff
-→ Relay OFF
+```
+IP:      192.168.1.5
+Gateway: 192.168.1.1
+Subnet:  255.255.255.0
 ```
 
-Additional protections:
+Web interface:
 
-* 60-second debounce before switching
-* Adaptive sampling near threshold values
-* Manual override via web UI
+```
+http://192.168.1.5
+```
 
 ---
 
-## ⚡ Energy Calculation (Wh)
+## Relay Logic
 
-The system continuously integrates power over time to calculate total energy:
+Relay turns **ON** when:
 
-```text
-Energy (Wh) += Power (W) × Time Interval (hours)
-```
+* Voltage >= `High Threshold`
+* Current >= `ON Current`
 
-Energy is:
+Relay turns **OFF** when:
 
-* Calculated in `checkAndControlRelay()`
-* Resettable from the web UI
-* Stored in RAM (resets on reboot)
+* Voltage <= `Low Cutoff`
 
-This allows basic daily or session-based solar energy tracking.
-
-The relay is evaluated periodically using this logic:
-
-```text
-IF voltage >= High Threshold
-AND current >= Current Threshold
-→ Relay ON
-
-IF voltage <= Low Cutoff
-→ Relay OFF
-```
-
-Additional protections:
-
-* 60-second debounce before switching
-* Adaptive sampling near threshold values
-* Manual override via web UI
+All switching uses **60 seconds debounce**.
 
 ---
 
-## 🌙 Deep Sleep Logic
+## Deep Sleep Logic
 
-The ESP32 enters deep sleep when **all conditions** below are met:
+Device sleeps when:
 
-* NTP time is synchronized
-* Current time is night (≥ 19:00 or before wake time)
+* After 7pm
 * Relay is OFF
-* Condition persists for ≥ 60 seconds
+* Sleeps until configured wake time
 
-Wake-up occurs automatically at the configured **wake time**.
-
-Before sleeping:
-
-* INA219 is set to **power-down mode**
-* Relay is forced OFF
+This saves power at night.
 
 ---
 
-## 📶 WiFi Behavior
+## Maintenance Day
 
-* Static IP: `192.168.1.5`
-* Auto-reconnect enabled
-* Reconnect attempt every 30 seconds
-* Reduced TX power for lower consumption
-* NTP server: `192.168.1.1`
+On every **15th of month**:
 
----
+* Relay forced OFF
+* Manual control disabled
 
-## 🔄 OTA Firmware Update
-
-* Upload `.bin` file via `/update`
-* Automatic reboot after successful upload
-* Intended for **trusted LAN environments** (no authentication)
+Used for battery equalization / full charge.
 
 ---
 
-## ⚡ Power Optimization Techniques
+## Web Pages
 
-* INA219 manually toggled between ACTIVE / POWER-DOWN
-* Reduced WiFi TX power
-* Adaptive sensor sampling interval
-* Automatic night deep sleep
-
----
-
-## ⚠️ Notes & Warnings
-
-* No authentication on web interface (LAN use only)
-* Relay module must be **active HIGH**
-* Not intended for safety-critical or certified power systems
+| URL       | Function     |
+| --------- | ------------ |
+| `/`       | Dashboard    |
+| `/config` | Settings     |
+| `/update` | OTA firmware |
 
 ---
 
-## 📄 License
+## Configurable Settings
 
-MIT License
+| Setting        | Default |
+| -------------- | ------- |
+| Low Cutoff     | 12.1V   |
+| High Threshold | 13.2V   |
+| ON Current     | 150mA   |
+| Wake Hour      | 08:00   |
+
+Stored in **ESP32 Preferences (NVS)**.
 
 ---
 
-## 🙌 Author
+## Energy Tracking
 
-DIY solar relay controller using ESP32 + INA219.
+Energy is calculated as:
 
-Feel free to fork, modify, and improve.
+```
+Wh += Power(W) * Time(hours)
+```
+
+Resets manually from dashboard.
+
+---
+
+## OTA Update
+
+Open:
+
+```
+http://192.168.1.5/update
+```
+
+Upload compiled `.bin` file.
+
+Auto reboot after update.
+
+---
+
+## Power Optimizations
+
+* CPU locked at 80 MHz
+* INA219 powered down between reads
+* WiFi TX power limited
+* Deep sleep at night
+
+---
+
+## Flashing
+
+Compile using:
+
+* Arduino IDE
+* ESP32 board package
+* Target: **ESP32-C3**
+
+Libraries required:
+
+* Adafruit INA219
+* WiFi
+* WebServer
+
+---
+
+## Use Case
+
+Perfect for:
+
+* Solar battery load control
+* Router power automation
+* DIY solar UPS
+* Off-grid monitoring
+
+---
+
+## Author
+
+Built for long-term **24/7 solar automation** with zero cloud dependency.
+
+Runs fully on local network.
+
+---
+
+## License
+
+MIT / Free for personal projects.
