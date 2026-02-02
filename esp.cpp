@@ -107,6 +107,15 @@ String getTimeStringFull() {
   return String(timeStringBuff);
 }
 
+bool isMaintenanceDay() {
+  if (!ntp_synced) return false;
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
+    if (timeinfo.tm_mday == 15) return true;
+  }
+  return false;
+}
+
 void enterDeepSleep() {
   if (!ntp_synced) return;
 
@@ -154,6 +163,11 @@ void enterDeepSleep() {
 }
 
 void handleToggle() {
+  if (isMaintenanceDay()) {
+    server.sendHeader("Location", "/");
+    server.send(303);
+    return;
+  }
   if (server.hasArg("state")) {
     int s = server.arg("state").toInt();
     digitalWrite(RELAY_PIN, s);
@@ -214,24 +228,30 @@ void handleRoot() {
   float peak_p_display = peak_p / 1000.0;
   
   int relayState = digitalRead(RELAY_PIN);
+  bool maintenance = isMaintenanceDay();
   
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
   html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
   html += ".status{font-weight:bold;color:" + String(relayState == HIGH ? "#2e7d32" : "#c62828") + ";}";
   html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
+  html += "button:disabled{background:#ccc;cursor:not-allowed;}";
   html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
+  html += ".m-banner{background:#ff9800;color:black;padding:10px;border-radius:4px;margin-bottom:15px;text-align:center;font-weight:bold;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
-  html += "<h1>Solar System</h1><div class='card'><p>Time: " + getTimeStringFull() + "</p>";
+  html += "<h1>Solar System</h1>";
+  if (maintenance) html += "<div class='m-banner'>FULL CHARGE MODE ACTIVE (15th)</div>";
+  html += "<div class='card'><p>Time: " + getTimeStringFull() + "</p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(current_A, 2) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 2) + ")</span></p>";
   html += "<p>Power: <b>" + String(power_W, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
   html += "<p>Energy: <b>" + String(total_Wh, 3) + " Wh</b></p>";
   html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
   html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak/Energy Values</button></div>";
-  html += "<h2>Control</h2><div class='card'><button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
-  html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
+  html += "<h2>Control</h2><div class='card'>";
+  html += "<button class='btn-on' " + String(maintenance ? "disabled" : "") + " onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
+  html += "<button class='btn-off' " + String(maintenance ? "disabled" : "") + " onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
   html += "<h2>History</h2><div id='lb' class='log-box'>";
   for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
   html += "</div><script>var b=document.getElementById('lb');b.scrollTop=b.scrollHeight;</script>";
@@ -287,6 +307,15 @@ void checkAndControlRelay() {
   if (p > peak_p) peak_p = p;
   
   total_Wh += (p / 1000.0) * time_diff_hours;
+
+  if (isMaintenanceDay()) {
+    if (digitalRead(RELAY_PIN) == HIGH) {
+      digitalWrite(RELAY_PIN, LOW);
+      last_stable_state = LOW;
+      addLog("Maint Day: Relay OFF");
+    }
+    return;
+  }
 
   bool in_critical_zone = (abs(v - voltage_high_on_threshold_V) < 0.2) || (abs(v - voltage_low_cutoff_V) < 0.2);
   current_interval = in_critical_zone ? 2000 : 10000;
