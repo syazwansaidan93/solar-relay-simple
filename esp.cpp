@@ -37,6 +37,10 @@ float peak_v = 0, peak_c = 0, peak_p = 0;
 float total_Wh = 0;
 unsigned long last_energy_calc_ms = 0;
 
+// Relay On-Time Tracking
+unsigned long relay_total_on_ms = 0;
+unsigned long relay_last_activation_ms = 0;
+
 unsigned long debounce_delay_ms = 60000;
 unsigned long debounce_timer_start = 0;
 int last_stable_state = LOW;
@@ -64,6 +68,34 @@ void addLog(String msg) {
   if (eventLogs.size() > MAX_LOGS) {
     eventLogs.erase(eventLogs.begin());
   }
+}
+
+// Logic to track relay duration
+void updateRelayTiming(int newState) {
+  unsigned long now = millis();
+  if (newState == HIGH && last_stable_state == LOW) {
+    // Relay turned ON
+    relay_last_activation_ms = now;
+  } else if (newState == LOW && last_stable_state == HIGH) {
+    // Relay turned OFF
+    if (relay_last_activation_ms > 0) {
+      relay_total_on_ms += (now - relay_last_activation_ms);
+    }
+    relay_last_activation_ms = 0;
+  }
+}
+
+String getRelayOnTimeString() {
+  unsigned long current_session = 0;
+  if (digitalRead(RELAY_PIN) == HIGH && relay_last_activation_ms > 0) {
+    current_session = millis() - relay_last_activation_ms;
+  }
+  unsigned long total_ms = relay_total_on_ms + current_session;
+  unsigned long total_secs = total_ms / 1000;
+  int hours = total_secs / 3600;
+  int mins = (total_secs % 3600) / 60;
+  
+  return String(hours) + "h " + String(mins) + "m";
 }
 
 void setINA219PowerDown() {
@@ -170,6 +202,7 @@ void handleToggle() {
   }
   if (server.hasArg("state")) {
     int s = server.arg("state").toInt();
+    updateRelayTiming(s); // Update tracking before setting state
     digitalWrite(RELAY_PIN, s);
     last_stable_state = s;
     addLog("Manual -> " + String(s == HIGH ? "ON" : "OFF"));
@@ -180,6 +213,10 @@ void handleToggle() {
 
 void handleResetPeaks() {
   peak_v = 0; peak_c = 0; peak_p = 0; total_Wh = 0;
+  relay_total_on_ms = 0;
+  if (digitalRead(RELAY_PIN) == HIGH) relay_last_activation_ms = millis();
+  else relay_last_activation_ms = 0;
+  
   addLog("Stats Reset");
   server.sendHeader("Location", "/");
   server.send(303);
@@ -247,8 +284,9 @@ void handleRoot() {
   html += "<p>Current: <b>" + String(current_A, 2) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 2) + ")</span></p>";
   html += "<p>Power: <b>" + String(power_W, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
   html += "<p>Energy: <b>" + String(total_Wh, 3) + " Wh</b></p>";
-  html += "<p>Relay: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
-  html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak/Energy Values</button></div>";
+  html += "<p>Relay Status: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
+  html += "<p>Relay On-Time: <b>" + getRelayOnTimeString() + "</b></p>";
+  html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak/Energy/Time Values</button></div>";
   html += "<h2>Control</h2><div class='card'>";
   html += "<button class='btn-on' " + String(maintenance ? "disabled" : "") + " onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
   html += "<button class='btn-off' " + String(maintenance ? "disabled" : "") + " onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
@@ -310,6 +348,7 @@ void checkAndControlRelay() {
 
   if (isMaintenanceDay()) {
     if (digitalRead(RELAY_PIN) == HIGH) {
+      updateRelayTiming(LOW);
       digitalWrite(RELAY_PIN, LOW);
       last_stable_state = LOW;
       addLog("Maint Day: Relay OFF");
@@ -327,6 +366,7 @@ void checkAndControlRelay() {
   if (desired != last_stable_state) {
     if (debounce_timer_start == 0) debounce_timer_start = millis();
     if (millis() - debounce_timer_start >= debounce_delay_ms) {
+      updateRelayTiming(desired);
       digitalWrite(RELAY_PIN, desired);
       last_stable_state = desired;
       debounce_timer_start = 0;
