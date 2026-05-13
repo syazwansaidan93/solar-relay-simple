@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solar Monitor API</title>
+    <link href="output.css" rel="stylesheet">
+    <style>
+        .glass-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        @keyframes pulse-green {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .live-indicator {
+            animation: pulse-green 2s infinite;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen p-4 md:p-8 font-sans">
+    <div class="max-w-4xl mx-auto">
+        <header class="flex justify-between items-center mb-8">
+            <div>
+                <h1 class="text-3xl font-bold text-slate-800">Solar Live Monitor</h1>
+                <p class="text-slate-500 flex items-center gap-2">
+                    <span class="w-2 h-2 bg-green-500 rounded-full live-indicator"></span>
+                    Refreshing every 1s
+                </p>
+            </div>
+            <div id="connection-status" class="px-4 py-2 rounded-full bg-green-100 text-green-700 text-sm font-medium">
+                Connected
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            <div class="glass-card p-6 rounded-2xl shadow-sm">
+                <p class="text-slate-500 text-sm font-medium uppercase tracking-wider">Voltage</p>
+                <div class="flex items-baseline gap-2">
+                    <h2 id="voltage" class="text-4xl font-bold text-slate-900">--</h2>
+                    <span class="text-xl text-slate-500">V</span>
+                </div>
+                <p class="text-xs text-red-500 mt-2">Peak: <span id="peak_v">--</span> V</p>
+            </div>
+
+            <div class="glass-card p-6 rounded-2xl shadow-sm">
+                <p class="text-slate-500 text-sm font-medium uppercase tracking-wider">Current</p>
+                <div class="flex items-baseline gap-2">
+                    <h2 id="current" class="text-4xl font-bold text-slate-900">--</h2>
+                    <span class="text-xl text-slate-500">A</span>
+                </div>
+                <p class="text-xs text-red-500 mt-2">Peak: <span id="peak_c">--</span> A</p>
+            </div>
+
+            <div class="glass-card p-6 rounded-2xl shadow-sm">
+                <p class="text-slate-500 text-sm font-medium uppercase tracking-wider">Power</p>
+                <div class="flex items-baseline gap-2">
+                    <h2 id="power" class="text-4xl font-bold text-slate-900">--</h2>
+                    <span class="text-xl text-slate-500">W</span>
+                </div>
+                <p class="text-xs text-red-500 mt-2">Peak: <span id="peak_p">--</span> W</p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="glass-card p-6 rounded-2xl shadow-sm">
+                <div class="flex justify-between items-start mb-4">
+                    <p class="text-slate-500 text-sm font-medium uppercase tracking-wider">Relay Status</p>
+                    <div id="relay-badge" class="px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-widest bg-slate-200 text-slate-600">
+                        Unknown
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div id="relay-icon" class="w-12 h-12 rounded-full flex items-center justify-center bg-slate-100 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-2xl font-bold text-slate-900" id="relay-text">--</p>
+                        <p class="text-sm text-slate-500">On-Time: <span id="relay-uptime" class="font-semibold text-slate-700">--</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-card p-6 rounded-2xl shadow-sm">
+                <p class="text-slate-500 text-sm font-medium uppercase tracking-wider">Energy & System</p>
+                <div class="mt-2 space-y-3">
+                    <div class="flex justify-between border-b border-slate-100 pb-2">
+                        <span class="text-slate-600">Total Energy</span>
+                        <span class="font-bold text-slate-900"><span id="energy">--</span> Wh</span>
+                    </div>
+                    <div class="flex justify-between border-b border-slate-100 pb-2">
+                        <span class="text-slate-600">Device Time</span>
+                        <span id="timestamp" class="text-slate-900 text-sm">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="mt-8 text-center text-slate-400 text-sm">
+            Target API: <span class="font-mono">http://192.168.1.5/api/data</span>
+        </footer>
+    </div>
+
+    <script>
+        const API_URL = 'http://192.168.1.5/api/data';
+        const statusEl = document.getElementById('connection-status');
+
+        async function fetchData() {
+            try {
+                const response = await fetch(API_URL, { mode: 'cors' });
+                if (!response.ok) throw new Error('Network error');
+                
+                const data = await response.json();
+                updateUI(data);
+
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'px-4 py-2 rounded-full bg-green-100 text-green-700 text-sm font-medium';
+            } catch (error) {
+                statusEl.textContent = 'Offline / Error';
+                statusEl.className = 'px-4 py-2 rounded-full bg-red-100 text-red-700 text-sm font-medium';
+            }
+        }
+
+        function updateUI(data) {
+            const currentA = (data.current_ma / 1000).toFixed(3);
+            const powerW = (data.power_mw / 1000).toFixed(2);
+            const peakCA = (data.peak_c_ma / 1000).toFixed(3);
+            const peakPW = (data.peak_p_mw / 1000).toFixed(2);
+
+            document.getElementById('voltage').textContent = data.voltage.toFixed(2);
+            document.getElementById('current').textContent = currentA;
+            document.getElementById('power').textContent = powerW;
+            
+            document.getElementById('peak_v').textContent = data.peak_v.toFixed(2);
+            document.getElementById('peak_c').textContent = peakCA;
+            document.getElementById('peak_p').textContent = peakPW;
+            
+            document.getElementById('energy').textContent = data.energy_wh.toFixed(3);
+            document.getElementById('relay-uptime').textContent = data.uptime_relay;
+            document.getElementById('timestamp').textContent = data.timestamp;
+
+            const relayActive = data.relay === 1;
+            const badge = document.getElementById('relay-badge');
+            const icon = document.getElementById('relay-icon');
+            const text = document.getElementById('relay-text');
+
+            if (relayActive) {
+                badge.textContent = 'Active';
+                badge.className = 'px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-widest bg-green-500 text-white';
+                icon.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-green-100 text-green-600';
+                text.textContent = 'ON';
+            } else {
+                badge.textContent = 'Inactive';
+                badge.className = 'px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-widest bg-red-500 text-white';
+                icon.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-slate-100 text-slate-400';
+                text.textContent = 'OFF';
+            }
+        }
+
+        setInterval(fetchData, 1000);
+        fetchData();
+    </script>
+</body>
+</html>
