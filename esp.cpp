@@ -37,7 +37,6 @@ float peak_v = 0, peak_c = 0, peak_p = 0;
 float total_Wh = 0;
 unsigned long last_energy_calc_ms = 0;
 
-// Relay On-Time Tracking
 unsigned long relay_total_on_ms = 0;
 unsigned long relay_last_activation_ms = 0;
 
@@ -51,6 +50,7 @@ unsigned long last_wifi_check = 0;
 const unsigned long wifi_check_interval = 30000; 
 
 unsigned long off_start_time = 0;
+bool daily_reset_done = false;
 
 std::vector<String> eventLogs;
 const int MAX_LOGS = 15;
@@ -70,14 +70,11 @@ void addLog(String msg) {
   }
 }
 
-// Logic to track relay duration
 void updateRelayTiming(int newState) {
   unsigned long now = millis();
   if (newState == HIGH && last_stable_state == LOW) {
-    // Relay turned ON
     relay_last_activation_ms = now;
   } else if (newState == LOW && last_stable_state == HIGH) {
-    // Relay turned OFF
     if (relay_last_activation_ms > 0) {
       relay_total_on_ms += (now - relay_last_activation_ms);
     }
@@ -94,7 +91,6 @@ String getRelayOnTimeString() {
   unsigned long total_secs = total_ms / 1000;
   int hours = total_secs / 3600;
   int mins = (total_secs % 3600) / 60;
-  
   return String(hours) + "h " + String(mins) + "m";
 }
 
@@ -121,6 +117,13 @@ void setINA219Active() {
   }
 }
 
+void resetStats() {
+  peak_v = 0; peak_c = 0; peak_p = 0; total_Wh = 0;
+  relay_total_on_ms = 0;
+  if (digitalRead(RELAY_PIN) == HIGH) relay_last_activation_ms = millis();
+  else relay_last_activation_ms = 0;
+}
+
 void loadSettings() {
   preferences.begin("solar_relay", true);
   voltage_low_cutoff_V = preferences.getFloat("v_low", 12.1);
@@ -139,18 +142,21 @@ String getTimeStringFull() {
   return String(timeStringBuff);
 }
 
-bool isMaintenanceDay() {
-  if (!ntp_synced) return false;
+void checkDailyReset() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo) && timeinfo.tm_year > 120) {
-    if (timeinfo.tm_mday == 15) return true;
+    if (timeinfo.tm_hour == 5 && timeinfo.tm_min == 0 && !daily_reset_done) {
+      resetStats();
+      addLog("Daily 5AM Reset");
+      daily_reset_done = true;
+    } else if (timeinfo.tm_hour != 5) {
+      daily_reset_done = false;
+    }
   }
-  return false;
 }
 
 void enterDeepSleep() {
   if (!ntp_synced) return;
-
   static unsigned long last_sleep_check = 0;
   if (millis() - last_sleep_check < 15000) return;
   last_sleep_check = millis();
@@ -169,18 +175,15 @@ void enterDeepSleep() {
       off_start_time = millis();
       return;
     }
-    
     if (millis() - off_start_time >= 60000UL) {
       struct tm target_time = timeinfo;
       if (timeinfo.tm_hour >= 19) target_time.tm_mday++;
       target_time.tm_hour = wake_h;
       target_time.tm_min = wake_m;
       target_time.tm_sec = 0;
-      
       time_t now = mktime(&timeinfo);
       time_t then = mktime(&target_time);
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
-
       if (sleep_us > 0) {
         setINA219PowerDown();
         digitalWrite(RELAY_PIN, LOW);
@@ -194,15 +197,35 @@ void enterDeepSleep() {
   }
 }
 
+void handleApi() {
+  setINA219Active();
+  delay(65);
+  float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
+  float c_mA = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
+  float p_mW = (ina219_found) ? ina219.getPower_mW() : 0.0;
+  setINA219PowerDown();
+
+  String json = "{";
+  json += "\"voltage\":" + String(v, 2) + ",";
+  json += "\"current_ma\":" + String(c_mA, 1) + ",";
+  json += "\"power_mw\":" + String(p_mW, 1) + ",";
+  json += "\"peak_v\":" + String(peak_v, 2) + ",";
+  json += "\"peak_c_ma\":" + String(peak_c, 1) + ",";
+  json += "\"peak_p_mw\":" + String(peak_p, 1) + ",";
+  json += "\"energy_wh\":" + String(total_Wh, 3) + ",";
+  json += "\"relay\":" + String(digitalRead(RELAY_PIN)) + ",";
+  json += "\"uptime_relay\":\"" + getRelayOnTimeString() + "\",";
+  json += "\"timestamp\":\"" + getTimeStringFull() + "\"";
+  json += "}";
+  
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
 void handleToggle() {
-  if (isMaintenanceDay()) {
-    server.sendHeader("Location", "/");
-    server.send(303);
-    return;
-  }
   if (server.hasArg("state")) {
     int s = server.arg("state").toInt();
-    updateRelayTiming(s); // Update tracking before setting state
+    updateRelayTiming(s);
     digitalWrite(RELAY_PIN, s);
     last_stable_state = s;
     addLog("Manual -> " + String(s == HIGH ? "ON" : "OFF"));
@@ -212,11 +235,7 @@ void handleToggle() {
 }
 
 void handleResetPeaks() {
-  peak_v = 0; peak_c = 0; peak_p = 0; total_Wh = 0;
-  relay_total_on_ms = 0;
-  if (digitalRead(RELAY_PIN) == HIGH) relay_last_activation_ms = millis();
-  else relay_last_activation_ms = 0;
-  
+  resetStats();
   addLog("Stats Reset");
   server.sendHeader("Location", "/");
   server.send(303);
@@ -265,20 +284,16 @@ void handleRoot() {
   float peak_p_display = peak_p / 1000.0;
   
   int relayState = digitalRead(RELAY_PIN);
-  bool maintenance = isMaintenanceDay();
   
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
   html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
   html += ".status{font-weight:bold;color:" + String(relayState == HIGH ? "#2e7d32" : "#c62828") + ";}";
   html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
-  html += "button:disabled{background:#ccc;cursor:not-allowed;}";
   html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
-  html += ".m-banner{background:#ff9800;color:black;padding:10px;border-radius:4px;margin-bottom:15px;text-align:center;font-weight:bold;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   html += "<h1>Solar System</h1>";
-  if (maintenance) html += "<div class='m-banner'>FULL CHARGE MODE ACTIVE (15th)</div>";
   html += "<div class='card'><p>Time: " + getTimeStringFull() + "</p>";
   html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
   html += "<p>Current: <b>" + String(current_A, 2) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 2) + ")</span></p>";
@@ -288,12 +303,12 @@ void handleRoot() {
   html += "<p>Relay On-Time: <b>" + getRelayOnTimeString() + "</b></p>";
   html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak/Energy/Time Values</button></div>";
   html += "<h2>Control</h2><div class='card'>";
-  html += "<button class='btn-on' " + String(maintenance ? "disabled" : "") + " onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
-  html += "<button class='btn-off' " + String(maintenance ? "disabled" : "") + " onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
+  html += "<button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
+  html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
   html += "<h2>History</h2><div id='lb' class='log-box'>";
   for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
   html += "</div><script>var b=document.getElementById('lb');b.scrollTop=b.scrollHeight;</script>";
-  html += "<p style='text-align:center'><a href='/config'>Config Settings</a> | <a href='/update'>Firmware Update</a> | <a href='/'>Refresh</a></p></body></html>";
+  html += "<p style='text-align:center'><a href='/config'>Config</a> | <a href='/api/data'>API</a> | <a href='/update'>Update</a> | <a href='/'>Refresh</a></p></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -319,7 +334,6 @@ void checkAndControlRelay() {
   if (millis() < 5000) return;
   static unsigned long last_read = 0;
   static unsigned long current_interval = 10000;
-  
   unsigned long now_ms = millis();
   if (now_ms - last_read < current_interval) return;
   
@@ -339,22 +353,10 @@ void checkAndControlRelay() {
   setINA219PowerDown();
 
   if (v < 1.0) return;
-
   if (v > peak_v) peak_v = v;
   if (c > peak_c) peak_c = c;
   if (p > peak_p) peak_p = p;
-  
   total_Wh += (p / 1000.0) * time_diff_hours;
-
-  if (isMaintenanceDay()) {
-    if (digitalRead(RELAY_PIN) == HIGH) {
-      updateRelayTiming(LOW);
-      digitalWrite(RELAY_PIN, LOW);
-      last_stable_state = LOW;
-      addLog("Maint Day: Relay OFF");
-    }
-    return;
-  }
 
   bool in_critical_zone = (abs(v - voltage_high_on_threshold_V) < 0.2) || (abs(v - voltage_low_cutoff_V) < 0.2);
   current_interval = in_critical_zone ? 2000 : 10000;
@@ -384,6 +386,7 @@ void maintainWiFi() {
       is_online = true;
       configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
       server.on("/", handleRoot);
+      server.on("/api/data", handleApi);
       server.on("/config", handleConfigPage);
       server.on("/save", HTTP_POST, handleSave);
       server.on("/toggle", handleToggle);
@@ -460,6 +463,7 @@ void setup() {
 void loop() {
   checkAndControlRelay();
   maintainWiFi();
+  if (ntp_synced) checkDailyReset();
   if (is_online && ntp_synced) enterDeepSleep();
   delay(20);
 }
