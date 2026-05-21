@@ -1,5 +1,5 @@
 #include <Wire.h>
-#include <Adafruit_INA219.h>
+#include <INA226.h>  // Official INA226 Library by Rob Tillaart
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -8,8 +8,9 @@
 #include <Update.h>
 #include "esp_pm.h"
 
-Adafruit_INA219 ina219;
-bool ina219_found = false;
+// Instantiating Rob Tillaart's INA226 object (default I2C Address 0x40)
+INA226 ina(0x40);
+bool ina226_found = false;
 
 #define RELAY_PIN 5
 #define SDA_PIN 8
@@ -94,27 +95,16 @@ String getRelayOnTimeString() {
   return String(hours) + "h " + String(mins) + "m";
 }
 
-void setINA219PowerDown() {
-  if (!ina219_found) return;
-  uint16_t config_value = 0x399F;
-  config_value &= ~0x0007; 
-  Wire.beginTransmission(0x40);
-  Wire.write(0x00);
-  Wire.write((config_value >> 8) & 0xFF);
-  Wire.write(config_value & 0xFF);
-  Wire.endTransmission();
+void setINA226PowerDown() {
+  if (!ina226_found) return;
+  // Mode 0 = Power Down (Shutdown) in the INA226 Configuration Register
+  ina.setMode(0); 
 }
 
-void setINA219Active() {
-  if (!ina219_found) return;
-  uint16_t config_value = 0x399F;
-  Wire.beginTransmission(0x40);
-  Wire.write(0x00);
-  Wire.write((config_value >> 8) & 0xFF);
-  Wire.write(config_value & 0xFF);
-  if (Wire.endTransmission() != 0) {
-    ina219_found = false;
-  }
+void setINA226Active() {
+  if (!ina226_found) return;
+  // Mode 7 = Shunt & Bus Voltage Continuous Conversion in the INA226 Configuration Register
+  ina.setMode(7); 
 }
 
 void resetStats() {
@@ -185,7 +175,7 @@ void enterDeepSleep() {
       time_t then = mktime(&target_time);
       uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
       if (sleep_us > 0) {
-        setINA219PowerDown();
+        setINA226PowerDown();
         digitalWrite(RELAY_PIN, LOW);
         delay(100);
         esp_sleep_enable_timer_wakeup(sleep_us);
@@ -198,12 +188,13 @@ void enterDeepSleep() {
 }
 
 void handleApi() {
-  setINA219Active();
+  setINA226Active();
   delay(65);
-  float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c_mA = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
-  float p_mW = (ina219_found) ? ina219.getPower_mW() : 0.0;
-  setINA219PowerDown();
+  // Get active readouts from INA226
+  float v = (ina226_found) ? ina.getBusVoltage() : 0.0;
+  float c_mA = (ina226_found) ? ina.getCurrent_mA() : 0.0;
+  float p_mW = (ina226_found) ? ina.getPower_mW() : 0.0;
+  setINA226PowerDown();
 
   String json = "{";
   json += "\"voltage\":" + String(v, 2) + ",";
@@ -271,12 +262,12 @@ void handleConfigPage() {
 }
 
 void handleRoot() {
-  setINA219Active();
+  setINA226Active();
   delay(65);
-  float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c_mA = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
-  float p_mW = (ina219_found) ? ina219.getPower_mW() : 0.0;
-  setINA219PowerDown();
+  float v = (ina226_found) ? ina.getBusVoltage() : 0.0;
+  float c_mA = (ina226_found) ? ina.getCurrent_mA() : 0.0;
+  float p_mW = (ina226_found) ? ina.getPower_mW() : 0.0;
+  setINA226PowerDown();
   
   float current_A = c_mA / 1000.0;
   float power_W = p_mW / 1000.0;
@@ -340,17 +331,23 @@ void checkAndControlRelay() {
   float time_diff_hours = (now_ms - last_read) / 3600000.0;
   last_read = now_ms;
 
-  if (!ina219_found) {
-    ina219_found = ina219.begin();
-    if (!ina219_found) return;
+  if (!ina226_found) {
+    ina226_found = ina.begin();
+    if (ina226_found) {
+      // Limit to 8.0A max expectation to comply with the 81.92mV limit of INA226 ADC at 10mOhm (0.010V shunt)
+      ina.setMaxCurrentShunt(8.0, 0.010);
+      setINA226PowerDown();
+    } else {
+      return;
+    }
   }
   
-  setINA219Active();
+  setINA226Active();
   delay(65);
-  float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
-  float p = (ina219_found) ? ina219.getPower_mW() : 0.0;
-  setINA219PowerDown();
+  float v = (ina226_found) ? ina.getBusVoltage() : 0.0;
+  float c = (ina226_found) ? ina.getCurrent_mA() : 0.0;
+  float p = (ina226_found) ? ina.getPower_mW() : 0.0;
+  setINA226PowerDown();
 
   if (v < 1.0) return;
   if (v > peak_v) peak_v = v;
@@ -448,9 +445,16 @@ void setup() {
   struct timeval tv = { .tv_sec = t_reset };
   settimeofday(&tv, NULL);
 
+  // Initialize custom pins for standard Wire instance
   Wire.begin(SDA_PIN, SCL_PIN);
-  ina219_found = ina219.begin();
-  if (ina219_found) setINA219PowerDown();
+  
+  // Begin official INA226 Library connection sequence
+  ina226_found = ina.begin();
+  if (ina226_found) {
+    // Configure Max Current scale to 8.0 Amperes with a 10mOhm shunt resistor
+    ina.setMaxCurrentShunt(8.0, 0.010);
+    setINA226PowerDown();
+  }
   
   loadSettings();
   WiFi.mode(WIFI_STA);
