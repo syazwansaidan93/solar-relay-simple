@@ -57,17 +57,12 @@ bool daily_reset_done = false;
 std::vector<String> eventLogs;
 const int MAX_LOGS = 10;
 
-float getBatteryPercentage(float v) {
-  if (v >= 12.85) return 100.0;
-  if (v <= 11.50) return 0.0;
-  float volt[] = {11.50, 11.75, 11.90, 12.05, 12.20, 12.35, 12.50, 12.65, 12.85};
-  float soc[]  = {0.0,   20.0,  30.0,  40.0,  50.0,  60.0,  70.0,  80.0,  100.0};
-  for (int i = 0; i < 8; i++) {
-    if (v >= volt[i] && v <= volt[i+1]) {
-      return soc[i] + (v - volt[i]) * (soc[i+1] - soc[i]) / (volt[i+1] - volt[i]);
-    }
-  }
-  return 0.0;
+float getBatteryPercentage(float v, float c_mA) {
+  float low = voltage_low_cutoff_V;
+  float high = (c_mA > 50.0) ? 14.7 : 12.85;
+  if (v <= low) return 0.0;
+  if (v >= high) return 100.0;
+  return ((v - low) / (high - low)) * 100.0;
 }
 
 String getTimeStringShort() {
@@ -168,7 +163,7 @@ void handleApi() {
   float c_mA = (ina226_found) ? ina.getCurrent_mA() : 0.0;
   float p_mW = (ina226_found) ? ina.getPower_mW() : 0.0;
 
-  float b_pct = getBatteryPercentage(v);
+  float b_pct = getBatteryPercentage(v, c_mA);
 
   String json = "{";
   json += "\"voltage\":" + String(v, 2) + ",";
@@ -181,6 +176,7 @@ void handleApi() {
   json += "\"peak_p_mw\":" + String(peak_p, 1) + ",";
   json += "\"energy_wh\":" + String(total_Wh, 3) + ",";
   json += "\"battery_pct\":" + String(b_pct, 1) + ",";
+  json += "\"is_charging\":" + String((c_mA > 50.0) ? 1 : 0) + ",";
   json += "\"relay\":" + String(digitalRead(RELAY_PIN)) + ",";
   json += "\"uptime_relay\":\"" + getRelayOnTimeString() + "\",";
   json += "\"timestamp\":\"" + getTimeStringFull() + "\",";
@@ -246,10 +242,12 @@ void handleRoot() {
   float peak_p_display = peak_p / 1000.0;
   
   int relayState = digitalRead(RELAY_PIN);
-  float b_pct = getBatteryPercentage(v);
+  float b_pct = getBatteryPercentage(v, c_mA);
+  bool is_charging = (c_mA > 50.0);
   
   String barColor = "#2e7d32";
-  if (b_pct < 25.0) barColor = "#c62828";
+  if (is_charging) barColor = "#0288d1";
+  else if (b_pct < 25.0) barColor = "#c62828";
   else if (b_pct < 60.0) barColor = "#ef6c00";
 
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
@@ -263,7 +261,9 @@ void handleRoot() {
   html += "<h1>Solar System</h1>";
   html += "<div class='card'><p>Time: <span id='val-time'>" + getTimeStringFull() + "</span></p>";
   
-  html += "<p>Battery Capacity: <b><span id='val-bat-pct'>" + String(b_pct, 0) + "</span>%</b></p>";
+  String batDisplay = String(b_pct, 0) + "%";
+  if (is_charging) batDisplay += " ⚡";
+  html += "<p>Battery Capacity: <b><span id='val-bat-pct'>" + batDisplay + "</span></b></p>";
   html += "<div style='background:#e0e0e0;border-radius:4px;height:14px;width:100%;margin-bottom:15px;overflow:hidden;'>";
   html += "<div id='val-bat-bar' style='background:" + barColor + ";height:100%;width:" + String(b_pct, 0) + "%;transition:width 0.3s;'></div>";
   html += "</div>";
@@ -291,11 +291,12 @@ void handleRoot() {
   html += "    .then(function(r){return r.json();})";
   html += "    .then(function(data){";
   html += "      document.getElementById('val-time').innerText = data.timestamp;";
-  html += "      document.getElementById('val-bat-pct').innerText = data.battery_pct.toFixed(0);";
+  html += "      document.getElementById('val-bat-pct').innerText = data.battery_pct.toFixed(0) + (data.is_charging === 1 ? '% ⚡' : '%');";
   html += "      var bar = document.getElementById('val-bat-bar');";
   html += "      bar.style.width = data.battery_pct.toFixed(0) + '%';";
   html += "      var color = '#2e7d32';";
-  html += "      if(data.battery_pct < 25.0) color = '#c62828';";
+  html += "      if(data.is_charging === 1) color = '#0288d1';";
+  html += "      else if(data.battery_pct < 25.0) color = '#c62828';";
   html += "      else if(data.battery_pct < 60.0) color = '#ef6c00';";
   html += "      bar.style.backgroundColor = color;";
   html += "      document.getElementById('val-v').innerText = data.voltage.toFixed(2);";
@@ -318,7 +319,6 @@ void handleRoot() {
   html += "          var d = document.createElement('div');";
   html += "          d.innerText = log;";
   html += "          lb.appendChild(d);";
-  // Visual focus behavior on UI log auto-scroll
   html += "        });";
   html += "        lb.scrollTop = lb.scrollHeight;";
   html += "      }";
