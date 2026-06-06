@@ -4,7 +4,6 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <time.h>
-#include <vector>
 #include <Update.h>
 #include "esp_pm.h"
 
@@ -15,12 +14,12 @@ bool ina219_found = false;
 #define SDA_PIN 8
 #define SCL_PIN 9
 
-const char* ssid = "wifi_slow";
+const char* ssid = "wifi_slow2";
 const char* ntpServer = "192.168.1.1";
 const long gmtOffset_sec = 28800;
 const int daylightOffset_sec = 0;
 
-IPAddress local_IP(192, 168, 1, 5);
+IPAddress local_IP(192, 168, 1, 6);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 
@@ -29,13 +28,8 @@ Preferences preferences;
 
 float voltage_low_cutoff_V;
 float voltage_high_on_threshold_V;
-float current_on_threshold_mA;
-int wake_h;
-int wake_m;
 
-float peak_v = 0, peak_c = 0, peak_p = 0;
-float total_Wh = 0;
-unsigned long last_energy_calc_ms = 0;
+float peak_v = 0;
 
 unsigned long relay_total_on_ms = 0;
 unsigned long relay_last_activation_ms = 0;
@@ -49,11 +43,11 @@ bool ntp_synced = false;
 unsigned long last_wifi_check = 0;
 const unsigned long wifi_check_interval = 30000; 
 
-unsigned long off_start_time = 0;
 bool daily_reset_done = false;
 
-std::vector<String> eventLogs;
-const int MAX_LOGS = 15;
+const int MAX_LOGS = 10;
+String eventLogs[MAX_LOGS];
+int logCount = 0;
 
 void addLog(String msg) {
   struct tm timeinfo;
@@ -64,9 +58,14 @@ void addLog(String msg) {
     timestamp = "[" + String(buff) + "] ";
   }
   String entry = timestamp + msg;
-  eventLogs.push_back(entry);
-  if (eventLogs.size() > MAX_LOGS) {
-    eventLogs.erase(eventLogs.begin());
+  if (logCount < MAX_LOGS) {
+    eventLogs[logCount] = entry;
+    logCount++;
+  } else {
+    for (int i = 0; i < MAX_LOGS - 1; i++) {
+      eventLogs[i] = eventLogs[i + 1];
+    }
+    eventLogs[MAX_LOGS - 1] = entry;
   }
 }
 
@@ -94,31 +93,8 @@ String getRelayOnTimeString() {
   return String(hours) + "h " + String(mins) + "m";
 }
 
-void setINA219PowerDown() {
-  if (!ina219_found) return;
-  uint16_t config_value = 0x399F;
-  config_value &= ~0x0007; 
-  Wire.beginTransmission(0x40);
-  Wire.write(0x00);
-  Wire.write((config_value >> 8) & 0xFF);
-  Wire.write(config_value & 0xFF);
-  Wire.endTransmission();
-}
-
-void setINA219Active() {
-  if (!ina219_found) return;
-  uint16_t config_value = 0x399F;
-  Wire.beginTransmission(0x40);
-  Wire.write(0x00);
-  Wire.write((config_value >> 8) & 0xFF);
-  Wire.write(config_value & 0xFF);
-  if (Wire.endTransmission() != 0) {
-    ina219_found = false;
-  }
-}
-
 void resetStats() {
-  peak_v = 0; peak_c = 0; peak_p = 0; total_Wh = 0;
+  peak_v = 0;
   relay_total_on_ms = 0;
   if (digitalRead(RELAY_PIN) == HIGH) relay_last_activation_ms = millis();
   else relay_last_activation_ms = 0;
@@ -128,9 +104,6 @@ void loadSettings() {
   preferences.begin("solar_relay", true);
   voltage_low_cutoff_V = preferences.getFloat("v_low", 12.1);
   voltage_high_on_threshold_V = preferences.getFloat("v_high", 13.2);
-  current_on_threshold_mA = preferences.getFloat("c_high", 150.0);
-  wake_h = preferences.getInt("wake_h", 8);
-  wake_m = preferences.getInt("wake_m", 0);
   preferences.end();
 }
 
@@ -155,67 +128,21 @@ void checkDailyReset() {
   }
 }
 
-void enterDeepSleep() {
-  if (!ntp_synced) return;
-  static unsigned long last_sleep_check = 0;
-  if (millis() - last_sleep_check < 15000) return;
-  last_sleep_check = millis();
-
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo) || timeinfo.tm_year < 120) return;
-
-  int current_total_mins = (timeinfo.tm_hour * 60) + timeinfo.tm_min;
-  int wake_total_mins = (wake_h * 60) + wake_m;
-  int relayState = digitalRead(RELAY_PIN);
-
-  bool is_night = (timeinfo.tm_hour >= 19 || current_total_mins < wake_total_mins);
-
-  if (is_night && relayState == LOW) {
-    if (off_start_time == 0) {
-      off_start_time = millis();
-      return;
-    }
-    if (millis() - off_start_time >= 60000UL) {
-      struct tm target_time = timeinfo;
-      if (timeinfo.tm_hour >= 19) target_time.tm_mday++;
-      target_time.tm_hour = wake_h;
-      target_time.tm_min = wake_m;
-      target_time.tm_sec = 0;
-      time_t now = mktime(&timeinfo);
-      time_t then = mktime(&target_time);
-      uint64_t sleep_us = (uint64_t)(then - now) * 1000000ULL;
-      if (sleep_us > 0) {
-        setINA219PowerDown();
-        digitalWrite(RELAY_PIN, LOW);
-        delay(100);
-        esp_sleep_enable_timer_wakeup(sleep_us);
-        esp_deep_sleep_start();
-      }
-    }
-  } else {
-    off_start_time = 0;
-  }
-}
-
 void handleApi() {
-  setINA219Active();
-  delay(65);
   float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c_mA = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
-  float p_mW = (ina219_found) ? ina219.getPower_mW() : 0.0;
-  setINA219PowerDown();
 
   String json = "{";
   json += "\"voltage\":" + String(v, 2) + ",";
-  json += "\"current_ma\":" + String(c_mA, 1) + ",";
-  json += "\"power_mw\":" + String(p_mW, 1) + ",";
   json += "\"peak_v\":" + String(peak_v, 2) + ",";
-  json += "\"peak_c_ma\":" + String(peak_c, 1) + ",";
-  json += "\"peak_p_mw\":" + String(peak_p, 1) + ",";
-  json += "\"energy_wh\":" + String(total_Wh, 3) + ",";
   json += "\"relay\":" + String(digitalRead(RELAY_PIN)) + ",";
   json += "\"uptime_relay\":\"" + getRelayOnTimeString() + "\",";
-  json += "\"timestamp\":\"" + getTimeStringFull() + "\"";
+  json += "\"timestamp\":\"" + getTimeStringFull() + "\",";
+  json += "\"logs\":[";
+  for (int i = 0; i < logCount; i++) {
+    json += "\"" + eventLogs[i] + "\"";
+    if (i < logCount - 1) json += ",";
+  }
+  json += "]";
   json += "}";
   
   server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -262,52 +189,67 @@ void handleConfigPage() {
   html += "<h1>Configuration</h1><div class='card'><form action='/save' method='POST'>";
   html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(voltage_low_cutoff_V, 1) + "'>";
   html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(voltage_high_on_threshold_V, 1) + "'>";
-  html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(current_on_threshold_mA, 0) + "'>";
-  html += "Wake Hour (0-23): <input type='number' name='wake_h' value='" + String(wake_h) + "'>";
-  html += "Wake Minute (0-59): <input type='number' name='wake_m' value='" + String(wake_m) + "'>";
   html += "<button type='submit'>Save Changes</button></form></div>";
   html += "<p style='text-align:center'><a href='/'>Back Home</a></p></body></html>";
   server.send(200, "text/html", html);
 }
 
 void handleRoot() {
-  setINA219Active();
-  delay(65);
   float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c_mA = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
-  float p_mW = (ina219_found) ? ina219.getPower_mW() : 0.0;
-  setINA219PowerDown();
-  
-  float current_A = c_mA / 1000.0;
-  float power_W = p_mW / 1000.0;
-  float peak_c_display = peak_c / 1000.0;
-  float peak_p_display = peak_p / 1000.0;
-  
   int relayState = digitalRead(RELAY_PIN);
   
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
   html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
-  html += ".status{font-weight:bold;color:" + String(relayState == HIGH ? "#2e7d32" : "#c62828") + ";}";
+  html += ".status{font-weight:bold;}";
   html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
-  html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
+  html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
   html += "<h1>Solar System</h1>";
-  html += "<div class='card'><p>Time: " + getTimeStringFull() + "</p>";
-  html += "<p>Voltage: <b>" + String(v, 2) + " V</b> <span class='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
-  html += "<p>Current: <b>" + String(current_A, 2) + " A</b> <span class='peak'>(Peak: " + String(peak_c_display, 2) + ")</span></p>";
-  html += "<p>Power: <b>" + String(power_W, 2) + " W</b> <span class='peak'>(Peak: " + String(peak_p_display, 2) + ")</span></p>";
-  html += "<p>Energy: <b>" + String(total_Wh, 3) + " Wh</b></p>";
-  html += "<p>Relay Status: <span class='status'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
-  html += "<p>Relay On-Time: <b>" + getRelayOnTimeString() + "</b></p>";
-  html += "<button class='btn-reset' onclick=\"location.href='/reset_peaks'\">Reset Peak/Energy/Time Values</button></div>";
+  html += "<div class='card'><p>Time: <span id='time'>" + getTimeStringFull() + "</span></p>";
+  html += "<p>Voltage: <b><span id='voltage'>" + String(v, 2) + " V</span></b> <span class='peak' id='peak'>(Peak: " + String(peak_v, 2) + ")</span></p>";
+  html += "<p>Relay Status: <span class='status' id='status' style='color:" + String(relayState == HIGH ? "#2e7d32" : "#c62828") + ";'>" + String(relayState == HIGH ? "ACTIVE" : "INACTIVE") + "</span></p>";
+  html += "<p>Relay On-Time: <b><span id='on-time'>" + getRelayOnTimeString() + "</span></b></p></div>";
   html += "<h2>Control</h2><div class='card'>";
   html += "<button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
   html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
   html += "<h2>History</h2><div id='lb' class='log-box'>";
-  for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
-  html += "</div><script>var b=document.getElementById('lb');b.scrollTop=b.scrollHeight;</script>";
+  for (int i = 0; i < logCount; i++) html += "<div>" + eventLogs[i] + "</div>";
+  html += "</div>";
+  html += "<script>";
+  html += "function updateData(){";
+  html += "  fetch('/api/data')";
+  html += "    .then(r => r.json())";
+  html += "    .then(data => {";
+  html += "      document.getElementById('time').innerText = data.timestamp;";
+  html += "      document.getElementById('voltage').innerText = data.voltage.toFixed(2) + ' V';";
+  html += "      document.getElementById('peak').innerText = '(Peak: ' + data.peak_v.toFixed(2) + ')';";
+  html += "      var st = document.getElementById('status');";
+  html += "      if(data.relay == 1){";
+  html += "        st.innerText = 'ACTIVE';";
+  html += "        st.style.color = '#2e7d32';";
+  html += "      }else{";
+  html += "        st.innerText = 'INACTIVE';";
+  html += "        st.style.color = '#c62828';";
+  html += "      }";
+  html += "      document.getElementById('on-time').innerText = data.uptime_relay;";
+  html += "      var lb = document.getElementById('lb');";
+  html += "      lb.innerHTML = '';";
+  html += "      data.logs.forEach(log => {";
+  html += "        var d = document.createElement('div');";
+  html += "        d.innerText = log;";
+  html += "        lb.appendChild(d);";
+  html += "      });";
+  html += "      lb.scrollTop = lb.scrollHeight;";
+  html += "    });";
+  html += "}";
+  html += "setInterval(updateData, 3000);";
+  html += "window.onload = function(){";
+  html += "  var lb = document.getElementById('lb');";
+  html += "  lb.scrollTop = lb.scrollHeight;";
+  html += "};";
+  html += "</script>";
   html += "<p style='text-align:center'><a href='/config'>Config</a> | <a href='/api/data'>API</a> | <a href='/update'>Update</a> | <a href='/'>Refresh</a></p></body></html>";
   server.send(200, "text/html", html);
 }
@@ -315,15 +257,9 @@ void handleRoot() {
 void handleSave() {
   if (server.hasArg("v_low")) voltage_low_cutoff_V = server.arg("v_low").toFloat();
   if (server.hasArg("v_high")) voltage_high_on_threshold_V = server.arg("v_high").toFloat();
-  if (server.hasArg("c_high")) current_on_threshold_mA = server.arg("c_high").toFloat();
-  if (server.hasArg("wake_h")) wake_h = server.arg("wake_h").toInt();
-  if (server.hasArg("wake_m")) wake_m = server.arg("wake_m").toInt();
   preferences.begin("solar_relay", false);
   preferences.putFloat("v_low", voltage_low_cutoff_V);
   preferences.putFloat("v_high", voltage_high_on_threshold_V);
-  preferences.putFloat("c_high", current_on_threshold_mA);
-  preferences.putInt("wake_h", wake_h);
-  preferences.putInt("wake_m", wake_m);
   preferences.end();
   addLog("Settings updated");
   server.sendHeader("Location", "/");
@@ -337,33 +273,33 @@ void checkAndControlRelay() {
   unsigned long now_ms = millis();
   if (now_ms - last_read < current_interval) return;
   
-  float time_diff_hours = (now_ms - last_read) / 3600000.0;
   last_read = now_ms;
 
   if (!ina219_found) {
     ina219_found = ina219.begin();
+    if (ina219_found) {
+      Wire.beginTransmission(0x40);
+      Wire.write(0x00);
+      Wire.write(0x80);
+      Wire.write(0x00);
+      Wire.endTransmission();
+      delay(5);
+      ina219.begin();
+    }
     if (!ina219_found) return;
   }
   
-  setINA219Active();
-  delay(65);
   float v = (ina219_found) ? ina219.getBusVoltage_V() : 0.0;
-  float c = (ina219_found) ? ina219.getCurrent_mA() : 0.0;
-  float p = (ina219_found) ? ina219.getPower_mW() : 0.0;
-  setINA219PowerDown();
 
   if (v < 1.0) return;
   if (v > peak_v) peak_v = v;
-  if (c > peak_c) peak_c = c;
-  if (p > peak_p) peak_p = p;
-  total_Wh += (p / 1000.0) * time_diff_hours;
 
   bool in_critical_zone = (abs(v - voltage_high_on_threshold_V) < 0.2) || (abs(v - voltage_low_cutoff_V) < 0.2);
   current_interval = in_critical_zone ? 2000 : 10000;
 
   int desired = last_stable_state;
-  if (v >= voltage_high_on_threshold_V && c >= current_on_threshold_mA) desired = HIGH;
-  else if (v <= voltage_low_cutoff_V) desired = LOW;
+  if (v <= voltage_low_cutoff_V) desired = HIGH;
+  else if (v >= voltage_high_on_threshold_V) desired = LOW;
 
   if (desired != last_stable_state) {
     if (debounce_timer_start == 0) debounce_timer_start = millis();
@@ -450,7 +386,15 @@ void setup() {
 
   Wire.begin(SDA_PIN, SCL_PIN);
   ina219_found = ina219.begin();
-  if (ina219_found) setINA219PowerDown();
+  if (ina219_found) {
+    Wire.beginTransmission(0x40);
+    Wire.write(0x00);
+    Wire.write(0x80);
+    Wire.write(0x00);
+    Wire.endTransmission();
+    delay(5);
+    ina219.begin();
+  }
   
   loadSettings();
   WiFi.mode(WIFI_STA);
@@ -464,6 +408,5 @@ void loop() {
   checkAndControlRelay();
   maintainWiFi();
   if (ntp_synced) checkDailyReset();
-  if (is_online && ntp_synced) enterDeepSleep();
   delay(20);
 }
