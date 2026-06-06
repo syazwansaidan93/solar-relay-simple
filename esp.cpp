@@ -4,7 +4,6 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <time.h>
-#include <vector>
 #include <Update.h>
 
 INA226 ina(0x40);
@@ -62,8 +61,9 @@ const unsigned long wifi_check_interval = 30000;
 
 bool daily_reset_done = false;
 
-std::vector<String> eventLogs;
 const int MAX_LOGS = 10;
+String eventLogs[MAX_LOGS];
+int logCount = 0;
 
 float getBatteryPercentage(float v, float c_mA) {
   float low = v_low_1;
@@ -90,9 +90,15 @@ void addLog(String msg) {
     timestamp = "[" + String(buff) + "] ";
   }
   String entry = timestamp + msg;
-  eventLogs.push_back(entry);
-  while (eventLogs.size() > MAX_LOGS) {
-    eventLogs.erase(eventLogs.begin());
+  
+  if (logCount < MAX_LOGS) {
+    eventLogs[logCount] = entry;
+    logCount++;
+  } else {
+    for (int i = 0; i < MAX_LOGS - 1; i++) {
+      eventLogs[i] = eventLogs[i + 1];
+    }
+    eventLogs[MAX_LOGS - 1] = entry;
   }
 }
 
@@ -222,9 +228,9 @@ void handleApi() {
   json += "\"uptime_relay2\":\"" + getRelayOnTimeString(2) + "\",";
   json += "\"timestamp\":\"" + getTimeStringFull() + "\",";
   json += "\"logs\":[";
-  for (size_t i = 0; i < eventLogs.size(); i++) {
+  for (int i = 0; i < logCount; i++) {
     json += "\"" + eventLogs[i] + "\"";
-    if (i < eventLogs.size() - 1) json += ",";
+    if (i < logCount - 1) json += ",";
   }
   json += "]";
   json += "}";
@@ -349,7 +355,7 @@ void handleRoot() {
   html += "<button class='btn-off' onclick=\"location.href='/toggle?relay=2&state=0'\">FORCE OFF</button></div>";
 
   html += "<h2>History</h2><div id='lb' class='log-box'>";
-  for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
+  for (int i = 0; i < logCount; i++) html += "<div>" + eventLogs[i] + "</div>";
   html += "</div>";
   
   html += "<script>";
@@ -385,7 +391,6 @@ void handleRoot() {
   html += "      var rStatus2 = document.getElementById('val-relay2-status');";
   html += "      rStatus2.innerText = data.relay2 === 1 ? 'ACTIVE' : 'INACTIVE';";
   html += "      rStatus2.style.color = data.relay2 === 1 ? '#2e7d32' : '#c62828';";
-  // Fixed a missing variable ID update bug from original code
   html += "      document.getElementById('val-relay2-time').innerText = data.uptime_relay2;";
   
   html += "      if (data.logs) {";
@@ -393,7 +398,6 @@ void handleRoot() {
   html += "        lb.innerHTML = '';";
   html += "        data.logs.forEach(function(log){";
   html += "          var d = document.createElement('div');";
-  // Fixed a text layout issue from original code
   html += "          d.innerText = log;";
   html += "          lb.appendChild(d);";
   html += "        });";
@@ -438,12 +442,18 @@ void checkAndControlRelay() {
   last_read = now_ms;
 
   if (!ina226_found) {
-    return;
+    ina226_found = ina.begin();
+    if (ina226_found) {
+      ina.reset();
+      ina.setMaxCurrentShunt(8.0, 0.010);
+    } else {
+      return;
+    }
   }
   
-  float v = ina.getBusVoltage();
-  float c = ina.getCurrent_mA();
-  float p = ina.getPower_mW();
+  float v = (ina226_found) ? ina.getBusVoltage() : 0.0;
+  float c = (ina226_found) ? ina.getCurrent_mA() : 0.0;
+  float p = (ina226_found) ? ina.getPower_mW() : 0.0;
 
   if (v < 1.0) return;
   
@@ -559,6 +569,17 @@ void setup() {
   pinMode(RELAY2_PIN, OUTPUT);
   digitalWrite(RELAY1_PIN, last_stable_state_1);
   digitalWrite(RELAY2_PIN, last_stable_state_2);
+  
+  struct tm tm_reset;
+  tm_reset.tm_year = 70;
+  tm_reset.tm_mon = 0;
+  tm_reset.tm_mday = 1;
+  tm_reset.tm_hour = 0;
+  tm_reset.tm_min = 0;
+  tm_reset.tm_sec = 0;
+  time_t t_reset = mktime(&tm_reset);
+  struct timeval tv = { .tv_sec = t_reset };
+  settimeofday(&tv, NULL);
 
   Wire.begin(SDA_PIN, SCL_PIN);
   
