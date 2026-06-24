@@ -4,14 +4,13 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <time.h>
-#include <vector>
 #include <Update.h>
-#include "esp_pm.h"
 
 INA226 ina(0x40);
 bool ina226_found = false;
 
-#define RELAY_PIN 5
+#define RELAY1_PIN 5
+#define RELAY2_PIN 6
 #define SDA_PIN 8
 #define SCL_PIN 9
 
@@ -27,22 +26,30 @@ IPAddress subnet(255, 255, 255, 0);
 WebServer server(80);
 Preferences preferences;
 
-float voltage_low_cutoff_V;
-float voltage_high_on_threshold_V;
-float current_on_threshold_mA;
+float v_low_1;
+float v_high_1;
+float c_high_1;
+
+float v_low_2;
+float v_high_2;
 
 float peak_v = 0, peak_c = 0, peak_p = 0;
 String peak_v_time = "N/A";
 String peak_c_time = "N/A";
 float total_Wh = 0;
-unsigned long last_energy_calc_ms = 0;
 
-unsigned long relay_total_on_ms = 0;
-unsigned long relay_last_activation_ms = 0;
+unsigned long relay1_total_on_ms = 0;
+unsigned long relay1_last_activation_ms = 0;
+unsigned long relay2_total_on_ms = 0;
+unsigned long relay2_last_activation_ms = 0;
 
-unsigned long debounce_delay_ms = 60000;
-unsigned long debounce_timer_start = 0;
-int last_stable_state = LOW;
+unsigned long debounce1_delay_ms = 60000;
+unsigned long debounce1_timer_start = 0;
+int last_stable_state_1 = LOW;
+
+unsigned long debounce2_delay_ms = 10000;
+unsigned long debounce2_timer_start = 0;
+int last_stable_state_2 = LOW;
 
 float v_filtered = -1.0;
 float c_filtered = -1.0;
@@ -54,11 +61,12 @@ const unsigned long wifi_check_interval = 30000;
 
 bool daily_reset_done = false;
 
-std::vector<String> eventLogs;
 const int MAX_LOGS = 10;
+String eventLogs[MAX_LOGS];
+int logCount = 0;
 
 float getBatteryPercentage(float v, float c_mA) {
-  float low = voltage_low_cutoff_V;
+  float low = v_low_1;
   float high = (c_mA > 50.0) ? 14.7 : 12.85;
   if (v <= low) return 0.0;
   if (v >= high) return 100.0;
@@ -82,30 +90,56 @@ void addLog(String msg) {
     timestamp = "[" + String(buff) + "] ";
   }
   String entry = timestamp + msg;
-  eventLogs.push_back(entry);
-  while (eventLogs.size() > MAX_LOGS) {
-    eventLogs.erase(eventLogs.begin());
-  }
-}
-
-void updateRelayTiming(int newState) {
-  unsigned long now = millis();
-  if (newState == HIGH && last_stable_state == LOW) {
-    relay_last_activation_ms = now;
-  } else if (newState == LOW && last_stable_state == HIGH) {
-    if (relay_last_activation_ms > 0) {
-      relay_total_on_ms += (now - relay_last_activation_ms);
+  
+  if (logCount < MAX_LOGS) {
+    eventLogs[logCount] = entry;
+    logCount++;
+  } else {
+    for (int i = 0; i < MAX_LOGS - 1; i++) {
+      eventLogs[i] = eventLogs[i + 1];
     }
-    relay_last_activation_ms = 0;
+    eventLogs[MAX_LOGS - 1] = entry;
   }
 }
 
-String getRelayOnTimeString() {
-  unsigned long current_session = 0;
-  if (digitalRead(RELAY_PIN) == HIGH && relay_last_activation_ms > 0) {
-    current_session = millis() - relay_last_activation_ms;
+void updateRelayTiming(int relay, int newState) {
+  unsigned long now = millis();
+  if (relay == 1) {
+    if (newState == HIGH && last_stable_state_1 == LOW) {
+      relay1_last_activation_ms = now;
+    } else if (newState == LOW && last_stable_state_1 == HIGH) {
+      if (relay1_last_activation_ms > 0) {
+        relay1_total_on_ms += (now - relay1_last_activation_ms);
+      }
+      relay1_last_activation_ms = 0;
+    }
+  } else if (relay == 2) {
+    if (newState == HIGH && last_stable_state_2 == LOW) {
+      relay2_last_activation_ms = now;
+    } else if (newState == LOW && last_stable_state_2 == HIGH) {
+      if (relay2_last_activation_ms > 0) {
+        relay2_total_on_ms += (now - relay2_last_activation_ms);
+      }
+      relay2_last_activation_ms = 0;
+    }
   }
-  unsigned long total_ms = relay_total_on_ms + current_session;
+}
+
+String getRelayOnTimeString(int relay) {
+  unsigned long total_ms = 0;
+  if (relay == 1) {
+    unsigned long current_session = 0;
+    if (digitalRead(RELAY1_PIN) == HIGH && relay1_last_activation_ms > 0) {
+      current_session = millis() - relay1_last_activation_ms;
+    }
+    total_ms = relay1_total_on_ms + current_session;
+  } else if (relay == 2) {
+    unsigned long current_session = 0;
+    if (digitalRead(RELAY2_PIN) == HIGH && relay2_last_activation_ms > 0) {
+      current_session = millis() - relay2_last_activation_ms;
+    }
+    total_ms = relay2_total_on_ms + current_session;
+  }
   unsigned long total_secs = total_ms / 1000;
   int hours = total_secs / 3600;
   int mins = (total_secs % 3600) / 60;
@@ -116,24 +150,35 @@ void resetStats() {
   peak_v = 0; peak_c = 0; peak_p = 0; total_Wh = 0;
   peak_v_time = "N/A";
   peak_c_time = "N/A";
-  relay_total_on_ms = 0;
-  if (digitalRead(RELAY_PIN) == HIGH) relay_last_activation_ms = millis();
-  else relay_last_activation_ms = 0;
+  relay1_total_on_ms = 0;
+  if (digitalRead(RELAY1_PIN) == HIGH) relay1_last_activation_ms = millis();
+  else relay1_last_activation_ms = 0;
+  relay2_total_on_ms = 0;
+  if (digitalRead(RELAY2_PIN) == HIGH) relay2_last_activation_ms = millis();
+  else relay2_last_activation_ms = 0;
 }
 
 void loadSettings() {
   preferences.begin("solar_relay", true);
-  voltage_low_cutoff_V = preferences.getFloat("v_low", 12.1);
-  voltage_high_on_threshold_V = preferences.getFloat("v_high", 13.2);
-  current_on_threshold_mA = preferences.getFloat("c_high", 150.0);
-  last_stable_state = preferences.getInt("r_state", LOW);
+  v_low_1 = preferences.getFloat("v_low", 12.1);
+  v_high_1 = preferences.getFloat("v_high", 13.2);
+  c_high_1 = preferences.getFloat("c_high", 150.0);
+  last_stable_state_1 = preferences.getInt("r_state", LOW);
+  v_low_2 = preferences.getFloat("v_low_2", 12.1);
+  v_high_2 = preferences.getFloat("v_high_2", 13.2);
+  last_stable_state_2 = preferences.getInt("r_state_2", LOW);
   preferences.end();
 }
 
-void saveRelayState(int state) {
-  last_stable_state = state;
+void saveRelayState(int relay, int state) {
   preferences.begin("solar_relay", false);
-  preferences.putInt("r_state", state);
+  if (relay == 1) {
+    last_stable_state_1 = state;
+    preferences.putInt("r_state", state);
+  } else if (relay == 2) {
+    last_stable_state_2 = state;
+    preferences.putInt("r_state_2", state);
+  }
   preferences.end();
 }
 
@@ -177,13 +222,15 @@ void handleApi() {
   json += "\"energy_wh\":" + String(total_Wh, 3) + ",";
   json += "\"battery_pct\":" + String(b_pct, 1) + ",";
   json += "\"is_charging\":" + String((c_mA > 50.0) ? 1 : 0) + ",";
-  json += "\"relay\":" + String(digitalRead(RELAY_PIN)) + ",";
-  json += "\"uptime_relay\":\"" + getRelayOnTimeString() + "\",";
+  json += "\"relay\":" + String(digitalRead(RELAY1_PIN)) + ",";
+  json += "\"uptime_relay\":\"" + getRelayOnTimeString(1) + "\",";
+  json += "\"relay2\":" + String(digitalRead(RELAY2_PIN)) + ",";
+  json += "\"uptime_relay2\":\"" + getRelayOnTimeString(2) + "\",";
   json += "\"timestamp\":\"" + getTimeStringFull() + "\",";
   json += "\"logs\":[";
-  for (size_t i = 0; i < eventLogs.size(); i++) {
+  for (int i = 0; i < logCount; i++) {
     json += "\"" + eventLogs[i] + "\"";
-    if (i < eventLogs.size() - 1) json += ",";
+    if (i < logCount - 1) json += ",";
   }
   json += "]";
   json += "}";
@@ -193,12 +240,20 @@ void handleApi() {
 }
 
 void handleToggle() {
-  if (server.hasArg("state")) {
+  if (server.hasArg("relay") && server.hasArg("state")) {
+    int r = server.arg("relay").toInt();
     int s = server.arg("state").toInt();
-    updateRelayTiming(s);
-    digitalWrite(RELAY_PIN, s);
-    saveRelayState(s);
-    addLog("Manual -> " + String(s == HIGH ? "ON" : "OFF"));
+    if (r == 1) {
+      updateRelayTiming(1, s);
+      digitalWrite(RELAY1_PIN, s);
+      saveRelayState(1, s);
+      addLog("Manual R1 -> " + String(s == HIGH ? "ON" : "OFF"));
+    } else if (r == 2) {
+      updateRelayTiming(2, s);
+      digitalWrite(RELAY2_PIN, s);
+      saveRelayState(2, s);
+      addLog("Manual R2 -> " + String(s == HIGH ? "ON" : "OFF"));
+    }
   }
   server.sendHeader("Location", "/");
   server.send(303);
@@ -223,9 +278,16 @@ void handleConfigPage() {
   html += "input{width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;border:1px solid #ccc;border-radius:4px;}";
   html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;}</style></head><body>";
   html += "<h1>Configuration</h1><div class='card'><form action='/save' method='POST'>";
-  html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(voltage_low_cutoff_V, 1) + "'>";
-  html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(voltage_high_on_threshold_V, 1) + "'>";
-  html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(current_on_threshold_mA, 0) + "'>";
+  
+  html += "<h3>Relay 1 Configuration</h3>";
+  html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low' value='" + String(v_low_1, 1) + "'>";
+  html += "High Threshold (V): <input type='number' step='0.1' name='v_high' value='" + String(v_high_1, 1) + "'>";
+  html += "ON Current (mA): <input type='number' step='1' name='c_high' value='" + String(c_high_1, 0) + "'>";
+  
+  html += "<h3>Relay 2 Configuration</h3>";
+  html += "Low Cutoff (V): <input type='number' step='0.1' name='v_low_2' value='" + String(v_low_2, 1) + "'>";
+  html += "High Threshold (V): <input type='number' step='0.1' name='v_high_2' value='" + String(v_high_2, 1) + "'>";
+  
   html += "<button type='submit'>Save Changes</button></form></div>";
   html += "<p style='text-align:center'><a href='/'>Back Home</a></p></body></html>";
   server.send(200, "text/html", html);
@@ -241,7 +303,8 @@ void handleRoot() {
   float peak_c_display = peak_c / 1000.0;
   float peak_p_display = peak_p / 1000.0;
   
-  int relayState = digitalRead(RELAY_PIN);
+  int relayState1 = digitalRead(RELAY1_PIN);
+  int relayState2 = digitalRead(RELAY2_PIN);
   float b_pct = getBatteryPercentage(v, c_mA);
   bool is_charging = (c_mA > 50.0);
   
@@ -254,7 +317,7 @@ void handleRoot() {
   html += "<style>body{font-family:sans-serif;padding:15px;max-width:450px;margin:auto;background:#f4f4f4;}";
   html += ".card{background:white;padding:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);margin-bottom:15px;}";
   html += ".status{font-weight:bold;}";
-  html += "button{width:100%;padding:12px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
+  html += "button{width:100%;padding:12px;color:white;border:none;border-radius:4px;cursor:pointer;margin-bottom:5px;}";
   html += ".btn-off{background:#c62828;} .btn-on{background:#2e7d32;} .btn-reset{background:#757575; font-size:12px; padding:8px;}";
   html += ".peak{color:#d32f2f; font-size: 0.85em;}";
   html += ".log-box{background:#212121;color:#00e676;padding:10px;font-family:monospace;font-size:11px;height:150px;overflow-y:auto;border-radius:4px;}</style></head><body>";
@@ -273,15 +336,26 @@ void handleRoot() {
   html += "<p>Power: <b><span id='val-p'>" + String(power_W, 2) + "</span> W</b> <span class='peak'>(Peak: <span id='val-peak-p'>" + String(peak_p_display, 2) + "</span>)</span></p>";
   html += "<p>Energy: <b><span id='val-wh'>" + String(total_Wh, 3) + "</span> Wh</b></p>";
   
-  String rStatusText = relayState == HIGH ? "ACTIVE" : "INACTIVE";
-  String rStatusColor = relayState == HIGH ? "#2e7d32" : "#c62828";
-  html += "<p>Relay Status: <span id='val-relay-status' class='status' style='color:" + rStatusColor + ";'>" + rStatusText + "</span></p>";
-  html += "<p>Relay On-Time: <b><span id='val-relay-time'>" + getRelayOnTimeString() + "</span></b></p></div>";
-  html += "<h2>Control</h2><div class='card'>";
-  html += "<button class='btn-on' onclick=\"location.href='/toggle?state=1'\">FORCE ON</button>";
-  html += "<button class='btn-off' onclick=\"location.href='/toggle?state=0'\">FORCE OFF</button></div>";
+  String rStatusText1 = relayState1 == HIGH ? "ACTIVE" : "INACTIVE";
+  String rStatusColor1 = relayState1 == HIGH ? "#2e7d32" : "#c62828";
+  html += "<p>Relay 1 Status: <span id='val-relay-status' class='status' style='color:" + rStatusColor1 + ";'>" + rStatusText1 + "</span></p>";
+  html += "<p>Relay 1 On-Time: <b><span id='val-relay-time'>" + getRelayOnTimeString(1) + "</span></b></p>";
+
+  String rStatusText2 = relayState2 == HIGH ? "ACTIVE" : "INACTIVE";
+  String rStatusColor2 = relayState2 == HIGH ? "#2e7d32" : "#c62828";
+  html += "<p>Relay 2 Status: <span id='val-relay2-status' class='status' style='color:" + rStatusColor2 + ";'>" + rStatusText2 + "</span></p>";
+  html += "<p>Relay 2 On-Time: <b><span id='val-relay2-time'>" + getRelayOnTimeString(2) + "</span></b></p></div>";
+
+  html += "<h2>Relay 1 Control</h2><div class='card'>";
+  html += "<button class='btn-on' onclick=\"location.href='/toggle?relay=1&state=1'\">FORCE ON</button>";
+  html += "<button class='btn-off' onclick=\"location.href='/toggle?relay=1&state=0'\">FORCE OFF</button></div>";
+
+  html += "<h2>Relay 2 Control</h2><div class='card'>";
+  html += "<button class='btn-on' onclick=\"location.href='/toggle?relay=2&state=1'\">FORCE ON</button>";
+  html += "<button class='btn-off' onclick=\"location.href='/toggle?relay=2&state=0'\">FORCE OFF</button></div>";
+
   html += "<h2>History</h2><div id='lb' class='log-box'>";
-  for (const auto& log : eventLogs) html += "<div>" + log + "</div>";
+  for (int i = 0; i < logCount; i++) html += "<div>" + eventLogs[i] + "</div>";
   html += "</div>";
   
   html += "<script>";
@@ -308,10 +382,17 @@ void handleRoot() {
   html += "      document.getElementById('val-p').innerText = (data.power_mw / 1000.0).toFixed(2);";
   html += "      document.getElementById('val-peak-p').innerText = (data.peak_p_mw / 1000.0).toFixed(2);";
   html += "      document.getElementById('val-wh').innerText = data.energy_wh.toFixed(3);";
+  
   html += "      var rStatus = document.getElementById('val-relay-status');";
   html += "      rStatus.innerText = data.relay === 1 ? 'ACTIVE' : 'INACTIVE';";
   html += "      rStatus.style.color = data.relay === 1 ? '#2e7d32' : '#c62828';";
   html += "      document.getElementById('val-relay-time').innerText = data.uptime_relay;";
+  
+  html += "      var rStatus2 = document.getElementById('val-relay2-status');";
+  html += "      rStatus2.innerText = data.relay2 === 1 ? 'ACTIVE' : 'INACTIVE';";
+  html += "      rStatus2.style.color = data.relay2 === 1 ? '#2e7d32' : '#c62828';";
+  html += "      document.getElementById('val-relay2-time').innerText = data.uptime_relay2;";
+  
   html += "      if (data.logs) {";
   html += "        var lb = document.getElementById('lb');";
   html += "        lb.innerHTML = '';";
@@ -332,13 +413,18 @@ void handleRoot() {
 }
 
 void handleSave() {
-  if (server.hasArg("v_low")) voltage_low_cutoff_V = server.arg("v_low").toFloat();
-  if (server.hasArg("v_high")) voltage_high_on_threshold_V = server.arg("v_high").toFloat();
-  if (server.hasArg("c_high")) current_on_threshold_mA = server.arg("c_high").toFloat();
+  if (server.hasArg("v_low")) v_low_1 = server.arg("v_low").toFloat();
+  if (server.hasArg("v_high")) v_high_1 = server.arg("v_high").toFloat();
+  if (server.hasArg("c_high")) c_high_1 = server.arg("c_high").toFloat();
+  if (server.hasArg("v_low_2")) v_low_2 = server.arg("v_low_2").toFloat();
+  if (server.hasArg("v_high_2")) v_high_2 = server.arg("v_high_2").toFloat();
+  
   preferences.begin("solar_relay", false);
-  preferences.putFloat("v_low", voltage_low_cutoff_V);
-  preferences.putFloat("v_high", voltage_high_on_threshold_V);
-  preferences.putFloat("c_high", current_on_threshold_mA);
+  preferences.putFloat("v_low", v_low_1);
+  preferences.putFloat("v_high", v_high_1);
+  preferences.putFloat("c_high", c_high_1);
+  preferences.putFloat("v_low_2", v_low_2);
+  preferences.putFloat("v_high_2", v_high_2);
   preferences.end();
   addLog("Settings updated");
   server.sendHeader("Location", "/");
@@ -393,24 +479,41 @@ void checkAndControlRelay() {
     c_filtered = (c_filtered * 0.8) + (c * 0.2);
   }
 
-  bool in_critical_zone = (abs(v_filtered - voltage_high_on_threshold_V) < 0.2) || (abs(v_filtered - voltage_low_cutoff_V) < 0.2);
+  bool in_critical_zone = (abs(v_filtered - v_high_1) < 0.2) || (abs(v_filtered - v_low_1) < 0.2) || (abs(v_filtered - v_high_2) < 0.2) || (abs(v_filtered - v_low_2) < 0.2);
   current_interval = in_critical_zone ? 1000 : 2000;
 
-  int desired = last_stable_state;
-  if (v_filtered <= voltage_low_cutoff_V) desired = HIGH;
-  else if (v_filtered >= voltage_high_on_threshold_V && c_filtered >= current_on_threshold_mA) desired = LOW;
+  int desired_1 = last_stable_state_1;
+  if (v_filtered <= v_low_1) desired_1 = HIGH;
+  else if (v_filtered >= v_high_1 && c_filtered >= c_high_1) desired_1 = LOW;
 
-  if (desired != last_stable_state) {
-    if (debounce_timer_start == 0) debounce_timer_start = millis();
-    if (millis() - debounce_timer_start >= debounce_delay_ms) {
-      updateRelayTiming(desired);
-      digitalWrite(RELAY_PIN, desired);
-      saveRelayState(desired);
-      debounce_timer_start = 0;
-      addLog("Relay -> " + String(desired == HIGH ? "ON" : "OFF"));
+  if (desired_1 != last_stable_state_1) {
+    if (debounce1_timer_start == 0) debounce1_timer_start = millis();
+    if (millis() - debounce1_timer_start >= debounce1_delay_ms) {
+      updateRelayTiming(1, desired_1);
+      digitalWrite(RELAY1_PIN, desired_1);
+      saveRelayState(1, desired_1);
+      debounce1_timer_start = 0;
+      addLog("Relay1 -> " + String(desired_1 == HIGH ? "ON" : "OFF"));
     }
   } else {
-    debounce_timer_start = 0;
+    debounce1_timer_start = 0;
+  }
+
+  int desired_2 = last_stable_state_2;
+  if (v_filtered <= v_low_2) desired_2 = LOW;
+  else if (v_filtered >= v_high_2) desired_2 = HIGH;
+
+  if (desired_2 != last_stable_state_2) {
+    if (debounce2_timer_start == 0) debounce2_timer_start = millis();
+    if (millis() - debounce2_timer_start >= debounce2_delay_ms) {
+      updateRelayTiming(2, desired_2);
+      digitalWrite(RELAY2_PIN, desired_2);
+      saveRelayState(2, desired_2);
+      debounce2_timer_start = 0;
+      addLog("Relay2 -> " + String(desired_2 == HIGH ? "ON" : "OFF"));
+    }
+  } else {
+    debounce2_timer_start = 0;
   }
 }
 
@@ -460,17 +563,12 @@ void maintainWiFi() {
 }
 
 void setup() {
-  esp_pm_config_esp32c3_t pm_config = {
-    .max_freq_mhz = 80,
-    .min_freq_mhz = 80,
-    .light_sleep_enable = false
-  };
-  esp_pm_configure(&pm_config);
-
   loadSettings();
 
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, last_stable_state);
+  pinMode(RELAY1_PIN, OUTPUT);
+  pinMode(RELAY2_PIN, OUTPUT);
+  digitalWrite(RELAY1_PIN, last_stable_state_1);
+  digitalWrite(RELAY2_PIN, last_stable_state_2);
   
   struct tm tm_reset;
   tm_reset.tm_year = 70;
